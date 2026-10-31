@@ -1,0 +1,14 @@
+# Core Tabular & Text Processing
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+charset-normalizer>=3.3.0
+
+# LLM Inference
+torch>=2.4.0
+transformers>=4.45.0
+accelerate>=0.34.0
+
+# Evaluation, Testing & Utils
+tqdm>=4.66.0
+pytest>=8.0.0
