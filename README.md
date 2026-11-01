@@ -75,6 +75,35 @@ pytest tests/ -v
 
 ## ⚡ Inference & Submission Pipeline
 
+### Pipeline Overview
+
+```mermaid
+flowchart TD
+    A["questions.jsonl<br/>question + business_id + as_of_date"] --> B["Load business data<br/>CSV / Excel / SQLite"]
+    B --> C["Build context<br/>schema + README + rulebook + calendar"]
+    C --> D["Understand question<br/>intent, time, expected answer type"]
+    D --> E["Build token-budgeted prompt"]
+    E --> F["LLM generates Python / pandas code"]
+    F --> G["Execute code in isolated subprocess"]
+    G --> H{"Execution and output valid?"}
+    H -- "No; retries remain" --> I["Build correction prompt<br/>include error and available schema context"]
+    I --> F
+    H -- "No; retries exhausted" --> J["Abstain"]
+    H -- "Yes" --> K["Format typed answer"]
+    K --> L["Confidence gate"]
+    L --> M["Log answer, code, output, retries"]
+    J --> M
+    M --> N["submission.jsonl"]
+```
+
+The retry loop is DataMate's self-correction step: execution errors, answer
+type mismatches, and missing results can be sent back to the LLM with feedback
+for another code-generation attempt, up to `max_retries`. A successful code
+execution is not by itself proof that the business answer is correct; the
+confidence gate applies heuristics and can abstain when confidence is low.
+Prompt construction also enforces the model's input-token budget and abstains
+if required context cannot fit.
+
 ### 1. Local Prediction CLI
 ```bash
 python src/predict.py \
@@ -93,6 +122,31 @@ python src/evaluate.py \
     --answers data/train/answers.jsonl \
     --output result/eval_summary.json
 ```
+
+### Prompt Context Budget
+
+The prompt builder measures prompts with the active model tokenizer and removes
+optional sample rows, examples, and business context before compacting the
+schema. It preserves table variables, column names, business rules when they
+fit, and the question. If the required prompt still exceeds the input budget,
+the pipeline records an abstention instead of repeatedly sending an oversized
+prompt.
+
+The vLLM generator defaults to an 8,192-token context, reserves 1,024 tokens
+for generation and 512 safety tokens, and uses the remainder as the prompt
+budget. Set these environment variables only to values supported by the model
+and runtime:
+
+```bash
+VLLM_MAX_MODEL_LEN=8192
+VLLM_MAX_NEW_TOKENS=1024
+DATAMATE_PROMPT_SAFETY_TOKENS=512
+```
+
+Date-like columns containing Excel serial days or Vietnamese month text are
+normalized by the data loader. Generated code should compare pandas datetime
+columns with `pd.Timestamp` values rather than converting whole columns to
+Python `date` objects.
 
 ---
 
