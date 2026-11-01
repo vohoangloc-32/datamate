@@ -6,3 +6,4 @@ venv/
 result/
 *.log
 node_modules/
+log.txt
