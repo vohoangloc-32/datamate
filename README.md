@@ -73,7 +73,7 @@ pytest tests/ -v
 
 ### Git Commit Hooks
 Install the development dependencies to enable the Husky `commit-msg` hook.
-Commit messages are checked against the Conventional Commits format:
+Commit messages are checked against the [repository commit convention](CONVENTION.md):
 
 ```bash
 npm install
