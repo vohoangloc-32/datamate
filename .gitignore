@@ -5,3 +5,4 @@ __pycache__/
 venv/
 result/
 *.log
+node_modules/

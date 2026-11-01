@@ -71,6 +71,22 @@ Execute the entire test suite (all 55 unit and integration tests):
 pytest tests/ -v
 ```
 
+### Git Commit Hooks
+Install the development dependencies to enable the Husky `commit-msg` hook.
+Commit messages are checked against the Conventional Commits format:
+
+```bash
+npm install
+```
+
+Examples:
+
+```text
+feat: add question retry handling
+fix(data-loader): parse Excel serial dates
+docs: update pipeline overview
+```
+
 ---
 
 ## ⚡ Inference & Submission Pipeline
