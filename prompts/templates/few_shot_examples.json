@@ -3,43 +3,47 @@
     "question": "Tổng doanh thu thuần trong tháng này tính đến thời điểm hiện tại là bao nhiêu?",
     "as_of_date": "2024-05-18",
     "expected_type": "number",
-    "code": "# Lọc đơn hàng hợp lệ: không hủy, trong tháng 5 từ ngày 1 đến ngày 18\norders_df['order_date'] = pd.to_datetime(orders_df['order_date']).dt.date\nvalid_orders = orders_df[\n    (orders_df['status'] != 'Cancelled') &\n    (orders_df['order_date'] >= date(2024, 5, 1)) &\n    (orders_df['order_date'] <= date(2024, 5, 18))\n]\n# Doanh thu thuần = line_total sau giảm giá, loại trừ phí vận chuyển và thuế\nrevenue = valid_orders['subtotal'].sum()\nresult = float(revenue)\nanswer_type = 'number'",
-    "answer": 125400000.0
+    "code": "# Lọc đơn hàng hợp lệ: không hủy, trong tháng 5 từ ngày 1 đến ngày 18\norders_df['order_date'] = pd.to_datetime(orders_df['order_date'])\nvalid_orders = orders_df[\n    (orders_df['status'] != 'Cancelled') &\n    (orders_df['order_date'] >= pd.Timestamp('2024-05-01')) &\n    (orders_df['order_date'] <= pd.Timestamp('2024-05-18'))\n]\n# Doanh thu thuần = line_total sau giảm giá, loại trừ phí vận chuyển và thuế\nrevenue = valid_orders['subtotal'].sum()\nresult = float(revenue)\nanswer_type = 'number'",
+    "answer": 125400000
   },
   {
     "question": "Sản phẩm nào bán chạy nhất trong quý 1 năm 2024?",
     "as_of_date": "2024-04-01",
     "expected_type": "string",
-    "code": "# Bán chạy nhất = xếp hạng theo số lượng (quantity), không theo doanh thu\norders['order_date'] = pd.to_datetime(orders['order_date']).dt.date\nq1_orders = orders[\n    (orders['order_date'] >= date(2024, 1, 1)) &\n    (orders['order_date'] <= date(2024, 3, 31)) &\n    (orders['status'] != 'Cancelled')\n]\nmerged = q1_orders.merge(order_items, on='order_id')\ntop_prod = merged.groupby('product_name')['quantity'].sum().reset_index()\ntop_prod = top_prod.sort_values(by='quantity', ascending=False)\nresult = str(top_prod.iloc[0]['product_name'])\nanswer_type = 'string'",
+    "code": "# Bán chạy nhất = xếp hạng theo số lượng (quantity), không theo doanh thu\norders['order_date'] = pd.to_datetime(orders['order_date'])\nq1_orders = orders[\n    (orders['order_date'] >= pd.Timestamp('2024-01-01')) &\n    (orders['order_date'] <= pd.Timestamp('2024-03-31')) &\n    (orders['status'] != 'Cancelled')\n]\nmerged = q1_orders.merge(order_items, on='order_id')\ntop_prod = merged.groupby('product_name')['quantity'].sum().reset_index()\ntop_prod = top_prod.sort_values(by='quantity', ascending=False)\nresult = str(top_prod.iloc[0]['product_name'])\nanswer_type = 'string'",
     "answer": "Cà phê sữa đá"
   },
   {
     "question": "Doanh thu tuần này tăng hay giảm bao nhiêu phần trăm so với tuần trước?",
     "as_of_date": "2024-03-24",
     "expected_type": "percent",
-    "code": "# Tuần tính từ Thứ Hai đến Chủ Nhật theo rulebook\n# as_of_date 2024-03-24 là Chủ Nhật\norders['order_date'] = pd.to_datetime(orders['order_date']).dt.date\ncurr_week = orders[\n    (orders['order_date'] >= date(2024, 3, 18)) &\n    (orders['order_date'] <= date(2024, 3, 24)) &\n    (orders['status'] != 'Cancelled')\n]['total_amount'].sum()\nprev_week = orders[\n    (orders['order_date'] >= date(2024, 3, 11)) &\n    (orders['order_date'] <= date(2024, 3, 17)) &\n    (orders['status'] != 'Cancelled')\n]['total_amount'].sum()\nif prev_week == 0:\n    result = 0.0\nelse:\n    pct_change = ((curr_week - prev_week) / prev_week) * 100.0\n    result = round(float(pct_change), 2)\nanswer_type = 'percent'",
+    "code": "# Tuần tính từ Thứ Hai đến Chủ Nhật theo rulebook\n# as_of_date 2024-03-24 là Chủ Nhật\norders['order_date'] = pd.to_datetime(orders['order_date'])\ncurr_week = orders[\n    (orders['order_date'] >= pd.Timestamp('2024-03-18')) &\n    (orders['order_date'] <= pd.Timestamp('2024-03-24')) &\n    (orders['status'] != 'Cancelled')\n]['total_amount'].sum()\nprev_week = orders[\n    (orders['order_date'] >= pd.Timestamp('2024-03-11')) &\n    (orders['order_date'] <= pd.Timestamp('2024-03-17')) &\n    (orders['status'] != 'Cancelled')\n]['total_amount'].sum()\nif prev_week == 0:\n    result = 0.0\nelse:\n    pct_change = ((curr_week - prev_week) / prev_week) * 100.0\n    result = round(float(pct_change), 2)\nanswer_type = 'percent'",
     "answer": 15.35
   },
   {
     "question": "Ngày nào có doanh thu cao nhất trong tháng 2 năm 2024?",
     "as_of_date": "2024-03-01",
     "expected_type": "date",
-    "code": "orders['order_date'] = pd.to_datetime(orders['order_date']).dt.date\nfeb_orders = orders[\n    (orders['order_date'] >= date(2024, 2, 1)) &\n    (orders['order_date'] <= date(2024, 2, 29)) &\n    (orders['status'] != 'Cancelled')\n]\ndaily_rev = feb_orders.groupby('order_date')['amount'].sum().reset_index()\nbest_day = daily_rev.sort_values(by='amount', ascending=False).iloc[0]['order_date']\nresult = best_day.isoformat() if hasattr(best_day, 'isoformat') else str(best_day)\nanswer_type = 'date'",
+    "code": "orders['order_date'] = pd.to_datetime(orders['order_date'])\nfeb_orders = orders[\n    (orders['order_date'] >= pd.Timestamp('2024-02-01')) &\n    (orders['order_date'] <= pd.Timestamp('2024-02-29')) &\n    (orders['status'] != 'Cancelled')\n]\ndaily_rev = feb_orders.groupby('order_date')['amount'].sum().reset_index()\nbest_day = daily_rev.sort_values(by='amount', ascending=False).iloc[0]['order_date']\nresult = best_day.isoformat() if hasattr(best_day, 'isoformat') else str(best_day)\nanswer_type = 'date'",
     "answer": "2024-02-14"
   },
   {
     "question": "Có khách hàng nào mua hàng trên 50 triệu trong tháng này không?",
     "as_of_date": "2024-06-20",
     "expected_type": "boolean",
-    "code": "orders['order_date'] = pd.to_datetime(orders['order_date']).dt.date\nmonth_orders = orders[\n    (orders['order_date'] >= date(2024, 6, 1)) &\n    (orders['order_date'] <= date(2024, 6, 20)) &\n    (orders['status'] != 'Cancelled')\n]\ncust_spending = month_orders.groupby('customer_id')['total_amount'].sum()\nresult = bool((cust_spending > 50000000).any())\nanswer_type = 'boolean'",
+    "code": "orders['order_date'] = pd.to_datetime(orders['order_date'])\nmonth_orders = orders[\n    (orders['order_date'] >= pd.Timestamp('2024-06-01')) &\n    (orders['order_date'] <= pd.Timestamp('2024-06-20')) &\n    (orders['status'] != 'Cancelled')\n]\ncust_spending = month_orders.groupby('customer_id')['total_amount'].sum()\nresult = bool((cust_spending > 50000000).any())\nanswer_type = 'boolean'",
     "answer": true
   },
   {
     "question": "Liệt kê danh sách top 3 chi nhánh có lượng đơn hàng nhiều nhất trong năm 2023.",
     "as_of_date": "2024-01-01",
     "expected_type": "list",
-    "code": "orders['order_date'] = pd.to_datetime(orders['order_date']).dt.date\ny2023_orders = orders[\n    (orders['order_date'] >= date(2023, 1, 1)) &\n    (orders['order_date'] <= date(2023, 12, 31)) &\n    (orders['status'] != 'Cancelled')\n]\ntop_branches = y2023_orders.groupby('branch_name')['order_id'].nunique().reset_index()\ntop_branches = top_branches.sort_values(by='order_id', ascending=False).head(3)\nresult = top_branches['branch_name'].tolist()\nanswer_type = 'list'",
-    "answer": ["Chi nhánh Quận 1", "Chi nhánh Ba Đình", "Chi nhánh Hải Châu"]
+    "code": "orders['order_date'] = pd.to_datetime(orders['order_date'])\ny2023_orders = orders[\n    (orders['order_date'] >= pd.Timestamp('2023-01-01')) &\n    (orders['order_date'] <= pd.Timestamp('2023-12-31')) &\n    (orders['status'] != 'Cancelled')\n]\ntop_branches = y2023_orders.groupby('branch_name')['order_id'].nunique().reset_index()\ntop_branches = top_branches.sort_values(by='order_id', ascending=False).head(3)\nresult = top_branches['branch_name'].tolist()\nanswer_type = 'list'",
+    "answer": [
+      "Chi nhánh Quận 1",
+      "Chi nhánh Ba Đình",
+      "Chi nhánh Hải Châu"
+    ]
   },
   {
     "question": "Bảng tổng hợp doanh thu và số đơn hàng theo từng tháng trong năm 2023.",
@@ -47,8 +51,23 @@
     "expected_type": "table",
     "code": "orders['order_date'] = pd.to_datetime(orders['order_date'])\ny2023_orders = orders[\n    (orders['order_date'].dt.year == 2023) &\n    (orders['status'] != 'Cancelled')\n].copy()\ny2023_orders['month'] = y2023_orders['order_date'].dt.strftime('%Y-%m')\nsummary = y2023_orders.groupby('month').agg(\n    doanh_thu=('amount', 'sum'),\n    so_don=('order_id', 'count')\n).reset_index()\nresult = {\n    'columns': ['month', 'doanh_thu', 'so_don'],\n    'rows': summary.values.tolist()\n}\nanswer_type = 'table'",
     "answer": {
-      "columns": ["month", "doanh_thu", "so_don"],
-      "rows": [["2023-01", 10000000, 50], ["2023-02", 12000000, 60]]
+      "columns": [
+        "month",
+        "doanh_thu",
+        "so_don"
+      ],
+      "rows": [
+        [
+          "2023-01",
+          10000000,
+          50
+        ],
+        [
+          "2023-02",
+          12000000,
+          60
+        ]
+      ]
     }
   },
   {

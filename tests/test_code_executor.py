@@ -99,6 +99,32 @@ answer_type = "number"
     assert res.result == 3
 
 
+def test_table_variable_mapping_uses_valid_unique_identifiers():
+    tables = {
+        "sales-data": pd.DataFrame({"amount": [10]}),
+        "sales_data": pd.DataFrame({"amount": [20]}),
+        "sales data": pd.DataFrame({"amount": [30]}),
+        "result": pd.DataFrame({"amount": [40]}),
+        "2 orders": pd.DataFrame({"amount": [50]}),
+    }
+    executor = CodeExecutor(timeout_seconds=5)
+
+    mapping = executor.get_table_var_mapping(tables)
+
+    assert len(set(mapping.values())) == len(tables)
+    assert all(variable.isidentifier() for variable in mapping.values())
+    assert mapping["result"] != "result"
+    assert mapping["sales_data"] != "sales_data"
+    code = "\n".join(
+        f"assert {variable}['amount'].iloc[0] == {index * 10}"
+        for index, variable in enumerate(mapping.values(), start=1)
+    )
+    code += "\nresult = True\nanswer_type = 'boolean'"
+    execution = executor.execute(code, tables, "2024-05-18", extract_code=False)
+    assert execution.success is True
+    assert execution.result is True
+
+
 def test_execute_allows_whitelisted_import(sample_tables):
     executor = CodeExecutor(timeout_seconds=5)
     code = """
@@ -125,3 +151,43 @@ answer_type = "string"
     assert res.success is False
     assert "ImportError" in res.error
 
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "result = pd.read_excel('sales.xlsx').shape[0]\nanswer_type = 'number'",
+        "result = pd.read_csv('sales.csv').shape[0]\nanswer_type = 'number'",
+        "result = pd.ExcelFile('sales.xlsx').sheet_names\nanswer_type = 'list'",
+        "result = pd.io.parsers.read_csv('sales.csv').shape[0]\nanswer_type = 'number'",
+    ],
+)
+def test_execute_blocks_file_reads_and_returns_failure(code, sample_tables):
+    res = CodeExecutor(timeout_seconds=5).execute(
+        code,
+        sample_tables,
+        "2024-05-18",
+        extract_code=False,
+    )
+
+    assert res.success is False
+    assert res.error.startswith("FileAccessError:")
+    assert "use only" not in res.error
+
+
+def test_execute_rejects_datetime_column_conversion_to_python_dates(sample_tables):
+    code = (
+        "orders['order_date'] = pd.to_datetime(['2025-01-01'] * len(orders))\n"
+        "orders['order_date'] = orders['order_date'].dt.date\n"
+        "result = len(orders)\nanswer_type = 'number'"
+    )
+
+    result = CodeExecutor(timeout_seconds=5).execute(
+        code,
+        sample_tables,
+        "2025-01-01",
+        extract_code=False,
+    )
+
+    assert result.success is False
+    assert "DateTypeError" in result.error
+    assert ".dt.date" in result.error

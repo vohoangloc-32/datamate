@@ -31,6 +31,109 @@ def _normalize_col_name(name: str) -> str:
     return name
 
 
+def _compact_col_name(name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(name).casefold())
+    normalized = "".join(
+        character for character in normalized
+        if not unicodedata.combining(character)
+    ).replace("đ", "d")
+    return re.sub(r"[^a-z0-9]", "", normalized)
+
+
+def _is_date_column(name: str) -> bool:
+    """Recognize common English and Vietnamese date/time column names."""
+    compact = _compact_col_name(name)
+    return any(token in compact for token in ("date", "datetime", "time", "ngay", "thoigian"))
+
+
+def _is_order_id_column(name: str) -> bool:
+    compact = _compact_col_name(name)
+    return any(token in compact for token in ("madon", "orderid", "orderno", "ordernumber"))
+
+
+def _is_order_metadata_column(name: str) -> bool:
+    compact = _compact_col_name(name)
+    return (
+        _is_order_id_column(name)
+        or any(token in compact for token in (
+            "ngaydat",
+            "orderdate",
+            "trangthaidonhang",
+            "orderstatus",
+            "tenkhachhang",
+            "customername",
+        ))
+    )
+
+
+def _fill_merged_order_metadata(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill merged order-level cells across product rows in order worksheets."""
+    order_id_columns = [
+        column for column in df.columns if _is_order_id_column(column)
+    ]
+    if not order_id_columns:
+        return df
+
+    order_id_column = order_id_columns[0]
+    order_keys = df[order_id_column].ffill()
+    if not df[order_id_column].isna().any():
+        return df
+
+    metadata_columns = [
+        column for column in df.columns
+        if _is_order_metadata_column(column)
+    ]
+    for column in metadata_columns:
+        if column == order_id_column:
+            df[column] = order_keys
+        else:
+            df[column] = df[column].groupby(order_keys, sort=False).ffill()
+    return df
+
+
+def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
+    """Parse date-like columns, including Excel serial-day values."""
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return values
+
+    non_null = values.dropna()
+    if non_null.empty:
+        return None
+
+    numeric = pd.to_numeric(values, errors="coerce")
+    valid_numeric = numeric.dropna()
+    if not valid_numeric.empty:
+        if valid_numeric.between(20000, 80000).all():
+            parsed_excel_dates = pd.to_datetime(
+                numeric,
+                unit="D",
+                origin="1899-12-30",
+                errors="coerce",
+            )
+            if parsed_excel_dates.notna().any():
+                return parsed_excel_dates
+        if valid_numeric.notna().sum() == len(non_null):
+            return None
+
+    date_text = values.astype("string").str.strip()
+    date_text = date_text.str.replace(
+        r"(?i)\bth(?:áng|g)\.?\s*",
+        "",
+        regex=True,
+    )
+    parsed_dates = pd.to_datetime(date_text, errors="coerce", dayfirst=True)
+    iso_dates = date_text.str.match(r"^\d{4}-\d{1,2}-\d{1,2}(?:\b|T)", na=False)
+    if iso_dates.any():
+        parsed_dates.loc[iso_dates] = pd.to_datetime(
+            date_text.loc[iso_dates],
+            errors="coerce",
+            yearfirst=True,
+        )
+    if parsed_dates.notna().any():
+        return parsed_dates
+    return None
+
+
 def _detect_encoding(filepath: str) -> str:
     """Detect file encoding using charset-normalizer (faster & more accurate
     than chardet for Vietnamese text)."""
@@ -50,6 +153,12 @@ def _detect_encoding(filepath: str) -> str:
 def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
     """Try to coerce object/string columns to numeric or datetime where appropriate."""
     for col in df.columns:
+        if _is_date_column(col):
+            parsed_dates = _coerce_date_column(df[col])
+            if parsed_dates is not None:
+                df[col] = parsed_dates
+                continue
+
         if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
             non_null = df[col].dropna()
             if len(non_null) == 0:
@@ -109,6 +218,7 @@ def _load_csv(filepath: str) -> Dict[str, pd.DataFrame]:
         df = pd.read_csv(filepath, encoding=encoding, on_bad_lines="warn")
 
     df.columns = [_normalize_col_name(c) for c in df.columns]
+    df = _fill_merged_order_metadata(df)
     df = _coerce_types(df)
     logger.info("Loaded CSV %s: %d rows × %d cols", filepath, len(df), len(df.columns))
     return {stem: df}
@@ -147,6 +257,7 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                     df = df.dropna(how="all").reset_index(drop=True)
 
             df.columns = [_normalize_col_name(c) for c in df.columns]
+            df = _fill_merged_order_metadata(df)
             df = _coerce_types(df)
             # Use file_stem__sheet_name as key if multiple sheets
             key = f"{Path(filepath).stem}__{sheet}" if len(xls.sheet_names) > 1 else Path(filepath).stem

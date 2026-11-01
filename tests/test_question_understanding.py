@@ -59,6 +59,39 @@ def test_classify_list(analyzer, as_of_date):
     assert info.ranking_k == 3
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_type"),
+    [
+        ("e bua nay cua hang ban duoc bao nhieu tien", "number"),
+        ("dthu trung bình treen một đơn tháng 7/2025 là bnhiu", "number"),
+        ("so don bi huy trong thang 7 nam 2026 la bao nhieu", "number"),
+        ("Tháng 4 năm 2025, 5 khách nào chi tiêu nhiều nhất?", "list"),
+        ("thang 8/2026 ti le don bi huy la bn %", "percent"),
+        ("Doanh thu 3 tháng có tăng liên tục ko?", "boolean"),
+        ("ngay nao trong thang 9/2025 doanh thu cao nhat", "date"),
+        ("tháng 1/2026 ai mua hàng nhìu tiền nhất", "string"),
+        ("thang 8/2026 khach nao mua nhieu don nhat", "string"),
+        ("Xem giúp ngày 01/05/2026 cửa hàng bán Povidine 10% chai 90ml giá bao nhiêu một chai?", "number"),
+        ("Cho tôi biết doanh thu tháng 8/2025.", "number"),
+        ("sản phẩm nào có doanh thu cao nhất?", "string"),
+        ("Doanh thu các đơn Zalo OA và tại quầy lần lượt là bao nhiêu?", "list"),
+        ("doanh thu tháng 1/2026 tăng hay giảm nhiêu % so với tháng trước", "percent"),
+        ("Doanh thu 3 tháng liền nhau, mỗi tháng là bao nhiêu?", "list"),
+        ("cho bảng 3 khách còn nợ nhiều nhất, kèm số tiền còn nợ", "table"),
+        ("tồn kho được mấy lốc chẵn và mấy lọ lẻ", "list"),
+        ("Cho tôi 3 khách mua nhiều tiền nhất tháng 4/2026.", "list"),
+        ("5 best seller tháng 2/2026 là những mặt hàng nào", "list"),
+    ],
+)
+def test_classifies_common_unaccented_and_informal_questions(
+    analyzer,
+    as_of_date,
+    question,
+    expected_type,
+):
+    assert analyzer.analyze(question, as_of_date).expected_type == expected_type
+
+
 def test_classify_table(analyzer, as_of_date):
     q = "Bảng tổng hợp doanh thu và số đơn hàng theo từng tháng năm 2023."
     info = analyzer.analyze(q, as_of_date)

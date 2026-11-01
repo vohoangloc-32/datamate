@@ -39,6 +39,32 @@ from modules.question_logger import QuestionLogger
 logger = logging.getLogger(__name__)
 
 
+def _format_chat_prompt(tokenizer, prompt: str) -> str:
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    return prompt
+
+
+class _TokenCountingGenerateFn:
+    """Callable model adapter that exposes the exact tokenizer input budget."""
+
+    def __init__(self, generate_fn, tokenizer, max_prompt_tokens: int):
+        self._generate_fn = generate_fn
+        self._tokenizer = tokenizer
+        self.max_prompt_tokens = max_prompt_tokens
+
+    def __call__(self, prompt: str) -> str:
+        return self._generate_fn(prompt)
+
+    def count_tokens(self, prompt: str) -> int:
+        formatted_prompt = _format_chat_prompt(self._tokenizer, prompt)
+        return len(self._tokenizer.encode(formatted_prompt, add_special_tokens=False))
+
+
 # ---------------------------------------------------------------------------
 # LLM interface
 # ---------------------------------------------------------------------------
@@ -65,38 +91,40 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
         # Number of GPUs used for tensor parallelism. A 3B model fits on a single
         # 16 GB T4, so default to 1 (more robust); set VLLM_TP=2 to use both GPUs.
         tp_size = int(os.environ.get("VLLM_TP", "1"))
+        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192"))
+        max_new_tokens = int(os.environ.get("VLLM_MAX_NEW_TOKENS", "1024"))
+        prompt_safety_tokens = int(os.environ.get("DATAMATE_PROMPT_SAFETY_TOKENS", "512"))
+        max_prompt_tokens = max_model_len - max_new_tokens - prompt_safety_tokens
+        if max_prompt_tokens < 1:
+            raise ValueError(
+                "VLLM_MAX_MODEL_LEN must exceed VLLM_MAX_NEW_TOKENS plus "
+                "DATAMATE_PROMPT_SAFETY_TOKENS."
+            )
 
         llm = LLM(
             model=model_dir,
             tensor_parallel_size=tp_size,
             trust_remote_code=True,
-            max_model_len=8192,
+            max_model_len=max_model_len,
             gpu_memory_utilization=0.85,
             dtype="float16",  # T4 (compute capability 7.5) has no bf16 support
         )
         vllm_tokenizer = llm.get_tokenizer()
         sampling_params = SamplingParams(
             temperature=0.0,  # Greedy for reproducibility
-            max_tokens=1024,
+            max_tokens=max_new_tokens,
             stop=["```\n", "\n\n\n"],
             include_stop_str_in_output=True,  # keep closing ``` for code extraction
         )
 
         def generate(prompt: str) -> str:
-            if getattr(vllm_tokenizer, "chat_template", None):
-                text = vllm_tokenizer.apply_chat_template(
-                    [{"role": "user", "content": prompt}],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-            else:
-                text = prompt
+            text = _format_chat_prompt(vllm_tokenizer, prompt)
             outputs = llm.generate([text], sampling_params)
             return outputs[0].outputs[0].text
 
         logger.info("Loaded vLLM model from %s (tensor_parallel_size=%d)",
                     model_dir, tp_size)
-        return generate
+        return _TokenCountingGenerateFn(generate, vllm_tokenizer, max_prompt_tokens)
 
     except Exception as e:  # vLLM missing (ImportError) or failed to initialise
         logger.warning("vLLM not available (%s: %s), falling back to transformers",
@@ -126,24 +154,27 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
                                         skip_special_tokens=True)
                 return text.count("```") >= 2
 
+        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192"))
+        max_new_tokens = int(os.environ.get("VLLM_MAX_NEW_TOKENS", "1024"))
+        prompt_safety_tokens = int(os.environ.get("DATAMATE_PROMPT_SAFETY_TOKENS", "512"))
+        max_prompt_tokens = max_model_len - max_new_tokens - prompt_safety_tokens
+        if max_prompt_tokens < 1:
+            raise ValueError(
+                "VLLM_MAX_MODEL_LEN must exceed VLLM_MAX_NEW_TOKENS plus "
+                "DATAMATE_PROMPT_SAFETY_TOKENS."
+            )
+
         def generate(prompt: str) -> str:
             # Qwen-Instruct expects its chat format; raw text makes the model
             # ramble on until max_new_tokens.
-            if getattr(tokenizer, "chat_template", None):
-                text = tokenizer.apply_chat_template(
-                    [{"role": "user", "content": prompt}],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-            else:
-                text = prompt
+            text = _format_chat_prompt(tokenizer, prompt)
             inputs = tokenizer(text, return_tensors="pt",
                                add_special_tokens=False).to(model.device)
             prompt_len = inputs["input_ids"].shape[1]
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=1024,
+                    max_new_tokens=max_new_tokens,
                     do_sample=False,
                     pad_token_id=tokenizer.eos_token_id,
                     stopping_criteria=StoppingCriteriaList([_CodeBlockClosed(prompt_len)]),
@@ -153,7 +184,7 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
             return response
 
         logger.info("Loaded transformers model from %s", model_dir)
-        return generate
+        return _TokenCountingGenerateFn(generate, tokenizer, max_prompt_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +202,8 @@ class DataMatePipeline:
         max_retries: int = 3,
         confidence_threshold: float = 0.3,
         llm_generate_fn: Optional[Callable[[str], str]] = None,
+        prompt_token_counter: Optional[Callable[[str], int]] = None,
+        max_prompt_tokens: Optional[int] = None,
     ):
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
@@ -205,6 +238,14 @@ class DataMatePipeline:
 
         # LLM generation function and retry engine
         self._llm_generate_fn = llm_generate_fn
+        if (prompt_token_counter is None) != (max_prompt_tokens is None):
+            raise ValueError(
+                "prompt_token_counter and max_prompt_tokens must be provided together."
+            )
+        if max_prompt_tokens is not None and max_prompt_tokens < 1:
+            raise ValueError("max_prompt_tokens must be greater than zero.")
+        self._prompt_token_counter = prompt_token_counter
+        self._max_prompt_tokens = max_prompt_tokens
         self._retry_engine = None
 
         # Data cache
@@ -214,13 +255,20 @@ class DataMatePipeline:
 
         self.max_retries = max_retries
 
-    def _ensure_llm_loaded(self):
+    def _ensure_llm_loaded(self) -> RetryEngine:
         """Lazily load the LLM model if not provided."""
         if self._llm_generate_fn is None:
             logger.info("Loading LLM model from %s...", self.model_dir)
             t0 = time.time()
             self._llm_generate_fn = create_llm_generate_fn(self.model_dir)
             logger.info("LLM loaded in %.1fs", time.time() - t0)
+
+        if self._prompt_token_counter is None:
+            if isinstance(self._llm_generate_fn, _TokenCountingGenerateFn):
+                self._prompt_token_counter = self._llm_generate_fn.count_tokens
+        if self._max_prompt_tokens is None:
+            if isinstance(self._llm_generate_fn, _TokenCountingGenerateFn):
+                self._max_prompt_tokens = self._llm_generate_fn.max_prompt_tokens
 
         if self._retry_engine is None:
             self._retry_engine = RetryEngine(
@@ -229,6 +277,7 @@ class DataMatePipeline:
                 llm_generate_fn=self._llm_generate_fn,
                 max_retries=self.max_retries,
             )
+        return self._retry_engine
 
     def _load_business(self, business_id: str):
         """Load and cache business data, schema, and README."""
@@ -275,6 +324,10 @@ class DataMatePipeline:
             schema = self._schema_cache[biz_id]
             readme = self._readme_cache[biz_id]
 
+            # Load the model tokenizer before building a prompt so the prompt
+            # budget is measured with the same tokenizer used for generation.
+            retry_engine = self._ensure_llm_loaded()
+
             # 2. Analyze question
             as_of = date.fromisoformat(as_of_date)
             q_info = self.question_analyzer.analyze(question, as_of)
@@ -292,15 +345,23 @@ class DataMatePipeline:
                 question_info=q_info,
                 table_var_names=table_vars,
                 head_rows=head_rows,
+                token_counter=self._prompt_token_counter,
+                max_tokens=(
+                    max(1, self._max_prompt_tokens - min(1024, self._max_prompt_tokens // 5))
+                    if self._prompt_token_counter is not None
+                    and self._max_prompt_tokens is not None
+                    else None
+                ),
             )
 
             # 4. Generate & execute code (with retries)
-            self._ensure_llm_loaded()
-            exec_result, retries = self._retry_engine.run(
+            exec_result, retries = retry_engine.run(
                 prompt=prompt,
                 tables=tables,
                 as_of_date=as_of_date,
                 expected_type=q_info.expected_type,
+                token_counter=self._prompt_token_counter,
+                max_prompt_tokens=self._max_prompt_tokens,
             )
 
             # 5. Format answer

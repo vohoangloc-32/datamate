@@ -6,8 +6,11 @@ with pre-loaded DataFrames, capturing results and handling errors.
 """
 
 import builtins
+import ast
 import io
+import keyword
 import logging
+import re
 import signal
 import sys
 import traceback
@@ -17,6 +20,54 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+_RESERVED_EXEC_NAMES = frozenset({
+    "pd", "np", "math", "datetime", "dt", "date", "timedelta", "re",
+    "as_of_date", "as_of_date_obj", "result", "answer_type", "__builtins__",
+})
+
+_FILE_READ_CALLS = frozenset({
+    "open",
+    "read_csv",
+    "read_excel",
+    "read_fwf",
+    "read_json",
+    "read_html",
+    "read_xml",
+    "read_pickle",
+    "read_parquet",
+    "read_feather",
+    "read_hdf",
+    "read_stata",
+    "read_sas",
+    "read_sql",
+    "read_sql_query",
+    "read_sql_table",
+    "read_table",
+    "read_clipboard",
+    "ExcelFile",
+    "HDFStore",
+})
+
+
+def _table_variable_mapping(tables: Dict[str, pd.DataFrame]) -> Dict[str, str]:
+    """Map table names to unique, valid Python identifiers."""
+    mapping = {}
+    used_names = set(_RESERVED_EXEC_NAMES)
+    for name in tables:
+        candidate = re.sub(r"\W", "_", name, flags=re.UNICODE)
+        if not candidate or candidate[0].isdigit():
+            candidate = f"table_{candidate}"
+        if not candidate.isidentifier() or keyword.iskeyword(candidate):
+            candidate = f"{candidate}_table"
+        base_name = candidate
+        suffix = 2
+        while candidate in used_names:
+            candidate = f"{base_name}_{suffix}"
+            suffix += 1
+        mapping[name] = candidate
+        used_names.add(candidate)
+    return mapping
 
 
 class ExecutionResult:
@@ -74,6 +125,44 @@ def _extract_code_from_response(response: str) -> str:
 
     # Fallback: return the entire response as code
     return response.strip()
+
+
+def _file_read_violation(code: str) -> Optional[str]:
+    """Return a message when generated code calls a common file-reading API."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id in _FILE_READ_CALLS:
+            return f"File access is not allowed: `{node.func.id}()`"
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _FILE_READ_CALLS:
+            return f"File access is not allowed: `.{node.func.attr}()`"
+    return None
+
+
+def _date_conversion_violation(code: str) -> Optional[str]:
+    """Reject converting a pandas datetime column to Python date objects."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "date"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "dt"
+        ):
+            return (
+                "DateTypeError: Keep pandas datetime columns as timestamps; "
+                "do not convert them with `.dt.date`."
+            )
+    return None
 
 
 # Top-level modules that LLM-generated code is allowed to import.
@@ -169,18 +258,24 @@ def _create_safe_globals(tables: Dict[str, pd.DataFrame],
         "answer_type": "abstain",
     }
 
-    # Load tables as both their original names and sanitized variable names
+    # Load tables under their original valid names and unique sanitized names.
+    variable_names = _table_variable_mapping(tables)
     for name, df in tables.items():
         # Make a copy to prevent modification of cached data
         df_copy = df.copy()
-        safe_globals[name] = df_copy
-        # Also create a sanitized variable name (e.g., "sales data" -> "sales_data")
-        sanitized = name.replace(" ", "_").replace("-", "_").replace(".", "_")
-        if sanitized != name:
-            safe_globals[sanitized] = df_copy
-        # If there's only one table, also assign it to "df"
-        if len(tables) == 1:
-            safe_globals["df"] = df_copy
+        variable_name = variable_names[name]
+        safe_globals[variable_name] = df_copy
+        if (
+            variable_name == name
+            and name.isidentifier()
+            and not keyword.iskeyword(name)
+            and name not in _RESERVED_EXEC_NAMES
+        ):
+            safe_globals[name] = df_copy
+
+    if len(tables) == 1:
+        only_table = next(iter(tables))
+        safe_globals["df"] = safe_globals[variable_names[only_table]]
 
     return safe_globals
 
@@ -230,6 +325,16 @@ class CodeExecutor:
             result.error = "No code to execute"
             return result
 
+        file_read_violation = _file_read_violation(code)
+        if file_read_violation:
+            result.error = f"FileAccessError: {file_read_violation}"
+            return result
+
+        date_conversion_violation = _date_conversion_violation(code)
+        if date_conversion_violation:
+            result.error = date_conversion_violation
+            return result
+
         # Build execution environment
         exec_globals = _create_safe_globals(tables, as_of_date)
 
@@ -265,12 +370,10 @@ class CodeExecutor:
 
     def get_table_var_mapping(self, tables: Dict[str, pd.DataFrame]) -> Dict[str, str]:
         """Get the mapping from table names to variable names."""
-        mapping = {}
-        for name in tables:
-            sanitized = name.replace(" ", "_").replace("-", "_").replace(".", "_")
-            mapping[name] = sanitized
-            if len(tables) == 1:
-                mapping[name] = "df"
+        mapping = _table_variable_mapping(tables)
+        if len(mapping) == 1:
+            only_table = next(iter(mapping))
+            mapping[only_table] = "df"
         return mapping
 
     def get_head_rows(self, tables: Dict[str, pd.DataFrame],

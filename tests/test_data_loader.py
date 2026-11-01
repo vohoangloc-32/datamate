@@ -32,6 +32,45 @@ def test_coerce_types():
     assert pd.api.types.is_string_dtype(coerced["str_col"]) or coerced["str_col"].dtype == object
 
 
+def test_coerce_excel_serials_and_vietnamese_date_strings():
+    df = pd.DataFrame({
+        "ngay_ban": [45717.0, 45718.0, None],
+        "order_date": ["1 thg 6 2025", "2 thg 6 2025", None],
+        "amount": [45658, 45689, 45717],
+    })
+
+    coerced = _coerce_types(df)
+
+    assert pd.api.types.is_datetime64_any_dtype(coerced["ngay_ban"])
+    assert coerced["ngay_ban"].iloc[0] == pd.Timestamp("2025-03-01")
+    assert pd.isna(coerced["ngay_ban"].iloc[2])
+    assert pd.api.types.is_datetime64_any_dtype(coerced["order_date"])
+    assert coerced["order_date"].iloc[0] == pd.Timestamp("2025-06-01")
+    assert pd.api.types.is_numeric_dtype(coerced["amount"])
+
+
+def test_coerce_mixed_date_column_values_to_timestamps():
+    df = pd.DataFrame({
+        "Ngày giao dịch": ["2025-06-01", "không rõ", None],
+    })
+
+    coerced = _coerce_types(df)
+
+    assert pd.api.types.is_datetime64_any_dtype(coerced["Ngày giao dịch"])
+    assert coerced["Ngày giao dịch"].iloc[0] == pd.Timestamp("2025-06-01")
+    assert pd.isna(coerced["Ngày giao dịch"].iloc[1])
+    assert pd.isna(coerced["Ngày giao dịch"].iloc[2])
+
+
+def test_date_column_does_not_interpret_year_numbers_as_excel_serials():
+    df = pd.DataFrame({"date": [2024, 2025, 2026]})
+
+    coerced = _coerce_types(df)
+
+    assert pd.api.types.is_numeric_dtype(coerced["date"])
+    assert coerced["date"].tolist() == [2024, 2025, 2026]
+
+
 def test_load_csv_and_sqlite(tmp_path):
     biz_dir = tmp_path / "biz_001"
     biz_dir.mkdir()
@@ -87,3 +126,39 @@ def test_load_xlsx_with_report_preamble(tmp_path):
     assert sales.columns.tolist() == ["Date", "Customer", "Amount"]
     assert len(sales) == 2
     assert sales.iloc[0]["Customer"] == "Customer A"
+
+
+def test_load_xlsx_fills_merged_order_metadata_within_each_order(tmp_path):
+    biz_dir = tmp_path / "biz_merged_orders"
+    biz_dir.mkdir()
+    pd.DataFrame([
+        ["ORD-1", "2025-01-01", "Completed", "Customer A", "Item 1", 10],
+        [None, None, None, None, "Item 2", 20],
+        ["ORD-2", "2025-01-02", "Cancelled", None, "Item 3", 30],
+        [None, None, None, None, "Item 4", 40],
+    ], columns=[
+        "Mã đơn hàng",
+        "Ngày đặt hàng",
+        "Trạng thái đơn hàng",
+        "Tên khách hàng",
+        "Tên sản phẩm",
+        "Tổng tiền",
+    ]).to_excel(biz_dir / "orders.xlsx", index=False)
+
+    orders = load_business_data(str(biz_dir), use_cache=False)["orders"]
+
+    assert orders["Mã đơn hàng"].tolist() == ["ORD-1", "ORD-1", "ORD-2", "ORD-2"]
+    assert orders["Ngày đặt hàng"].tolist() == [
+        pd.Timestamp("2025-01-01"),
+        pd.Timestamp("2025-01-01"),
+        pd.Timestamp("2025-01-02"),
+        pd.Timestamp("2025-01-02"),
+    ]
+    assert orders["Trạng thái đơn hàng"].tolist() == [
+        "Completed",
+        "Completed",
+        "Cancelled",
+        "Cancelled",
+    ]
+    assert pd.isna(orders["Tên khách hàng"].iloc[2])
+    assert pd.isna(orders["Tên khách hàng"].iloc[3])
