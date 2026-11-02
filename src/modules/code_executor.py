@@ -10,6 +10,7 @@ import ast
 import io
 import keyword
 import logging
+from numbers import Number
 import re
 import signal
 import sys
@@ -81,6 +82,7 @@ class ExecutionResult:
         self.stderr: str = ""
         self.error: Optional[str] = None
         self.code: str = ""
+        self.empty_dataframes: list[str] = []
 
     def __repr__(self):
         return (f"ExecutionResult(success={self.success}, "
@@ -144,32 +146,11 @@ def _file_read_violation(code: str) -> Optional[str]:
     return None
 
 
-def _date_conversion_violation(code: str) -> Optional[str]:
-    """Reject converting a pandas datetime column to Python date objects."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return None
-
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr == "date"
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "dt"
-        ):
-            return (
-                "DateTypeError: Keep pandas datetime columns as timestamps; "
-                "do not convert them with `.dt.date`."
-            )
-    return None
-
-
 # Top-level modules that LLM-generated code is allowed to import.
 _ALLOWED_IMPORTS = frozenset({
     "pandas", "numpy", "math", "re", "datetime", "calendar", "unicodedata",
     "collections", "itertools", "functools", "statistics", "decimal",
-    "fractions", "string", "operator", "typing", "json",
+    "fractions", "string", "operator", "typing", "json", "time",
 })
 
 
@@ -330,13 +311,13 @@ class CodeExecutor:
             result.error = f"FileAccessError: {file_read_violation}"
             return result
 
-        date_conversion_violation = _date_conversion_violation(code)
-        if date_conversion_violation:
-            result.error = date_conversion_violation
-            return result
-
         # Build execution environment
         exec_globals = _create_safe_globals(tables, as_of_date)
+        original_dataframe_ids = {
+            id(value)
+            for value in exec_globals.values()
+            if isinstance(value, pd.DataFrame)
+        }
 
         # Capture stdout/stderr
         stdout_capture = io.StringIO()
@@ -353,11 +334,30 @@ class CodeExecutor:
             result.result = exec_globals.get("result", None)
             result.answer_type = exec_globals.get("answer_type", "abstain")
             result.success = True
+            result.empty_dataframes = [
+                name
+                for name, value in exec_globals.items()
+                if isinstance(value, pd.DataFrame)
+                and id(value) not in original_dataframe_ids
+                and value.empty
+            ]
 
             # Validate result
             if result.result is None and result.answer_type not in ("unanswerable", "abstain"):
                 result.answer_type = "abstain"
                 logger.warning("Code produced None result, setting to abstain")
+            elif (
+                result.answer_type in ("number", "percent")
+                and isinstance(result.result, Number)
+                and not isinstance(result.result, bool)
+                and result.result == 0
+                and result.empty_dataframes
+            ):
+                result.error = (
+                    "EmptyFilterError: numeric zero was produced while derived "
+                    f"DataFrames were empty: {result.empty_dataframes}"
+                )
+                result.success = False
 
         except Exception as e:
             result.stdout = stdout_capture.getvalue()

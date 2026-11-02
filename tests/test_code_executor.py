@@ -174,11 +174,11 @@ def test_execute_blocks_file_reads_and_returns_failure(code, sample_tables):
     assert "use only" not in res.error
 
 
-def test_execute_rejects_datetime_column_conversion_to_python_dates(sample_tables):
+def test_execute_allows_python_dates_for_calendar_day_grouping(sample_tables):
     code = (
         "orders['order_date'] = pd.to_datetime(['2025-01-01'] * len(orders))\n"
-        "orders['order_date'] = orders['order_date'].dt.date\n"
-        "result = len(orders)\nanswer_type = 'number'"
+        "daily_amount = orders.groupby(orders['order_date'].dt.date)['amount'].sum()\n"
+        "result = int(daily_amount.iloc[0])\nanswer_type = 'number'"
     )
 
     result = CodeExecutor(timeout_seconds=5).execute(
@@ -188,6 +188,53 @@ def test_execute_rejects_datetime_column_conversion_to_python_dates(sample_table
         extract_code=False,
     )
 
+    assert result.success is True
+    assert result.result == 500000
+
+
+def test_execute_retries_runtime_python_date_timestamp_mismatch(sample_tables):
+    first_code = (
+        "orders['order_date'] = pd.to_datetime(pd.Series(['2025-01-01'] * len(orders))).dt.date\n"
+        "orders = orders[orders['order_date'] >= pd.Timestamp('2025-01-01')]\n"
+        "result = len(orders)\nanswer_type = 'number'"
+    )
+    result = CodeExecutor(timeout_seconds=5).execute(
+        first_code,
+        sample_tables,
+        "2025-01-01",
+        extract_code=False,
+    )
+
     assert result.success is False
-    assert "DateTypeError" in result.error
-    assert ".dt.date" in result.error
+    assert "TypeError" in result.error
+
+
+def test_execute_reports_numeric_zero_from_empty_derived_dataframe(sample_tables):
+    code = (
+        "filtered = orders[orders['status'] == 'Canceled']\n"
+        "result = int(filtered['amount'].sum())\nanswer_type = 'number'"
+    )
+
+    result = CodeExecutor(timeout_seconds=5).execute(
+        code,
+        sample_tables,
+        "2025-05-01",
+        extract_code=False,
+    )
+
+    assert result.success is False
+    assert result.result == 0
+    assert result.empty_dataframes == ["filtered"]
+    assert result.error.startswith("EmptyFilterError:")
+
+
+def test_execute_allows_time_import(sample_tables):
+    result = CodeExecutor(timeout_seconds=5).execute(
+        "import time\nresult = time.gmtime(0).tm_year\nanswer_type = 'number'",
+        sample_tables,
+        "2025-05-01",
+        extract_code=False,
+    )
+
+    assert result.success is True
+    assert result.result == 1970

@@ -46,6 +46,16 @@ def _is_date_column(name: str) -> bool:
     return any(token in compact for token in ("date", "datetime", "time", "ngay", "thoigian"))
 
 
+def _monthly_sheet_period(name: str) -> Optional[str]:
+    """Return YYYY-MM for sheet names that clearly identify a month."""
+    compact = _compact_col_name(name)
+    match = re.fullmatch(r"(?:thang|t)?(0?[1-9]|1[0-2])(20\d{2})", compact)
+    if not match:
+        return None
+    month, year = match.groups()
+    return f"{year}-{int(month):02d}"
+
+
 def _is_order_id_column(name: str) -> bool:
     compact = _compact_col_name(name)
     return any(token in compact for token in ("madon", "orderid", "orderno", "ordernumber"))
@@ -227,6 +237,7 @@ def _load_csv(filepath: str) -> Dict[str, pd.DataFrame]:
 def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
     """Load an Excel file (all sheets), returning {sheet_name: DataFrame}."""
     result = {}
+    monthly_sheets = []
     xls = pd.ExcelFile(filepath, engine="openpyxl")
     for sheet in xls.sheet_names:
         try:
@@ -262,10 +273,36 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
             # Use file_stem__sheet_name as key if multiple sheets
             key = f"{Path(filepath).stem}__{sheet}" if len(xls.sheet_names) > 1 else Path(filepath).stem
             result[key] = df
+            month = _monthly_sheet_period(sheet)
+            if month is not None:
+                monthly_sheets.append((sheet, month, df))
             logger.info("Loaded XLSX sheet '%s' from %s: %d rows × %d cols",
                         sheet, filepath, len(df), len(df.columns))
         except Exception as e:
             logger.warning("Failed to load sheet '%s' from %s: %s", sheet, filepath, e)
+
+    if len(monthly_sheets) > 1:
+        columns = tuple(monthly_sheets[0][2].columns)
+        if all(tuple(frame.columns) == columns for _, _, frame in monthly_sheets):
+            month_column = "__source_month"
+            sheet_column = "__source_sheet"
+            while month_column in columns or sheet_column in columns:
+                month_column += "_"
+                sheet_column += "_"
+            combined = []
+            for sheet, month, frame in monthly_sheets:
+                month_frame = frame.copy()
+                month_frame[month_column] = month
+                month_frame[sheet_column] = sheet
+                combined.append(month_frame)
+            combined_table = pd.concat(combined, ignore_index=True)
+            result[f"{Path(filepath).stem}__monthly_combined"] = combined_table
+            logger.info(
+                "Combined %d compatible monthly sheets from %s: %d rows",
+                len(combined),
+                filepath,
+                len(combined_table),
+            )
     return result
 
 

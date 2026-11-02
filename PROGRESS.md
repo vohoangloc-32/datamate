@@ -119,7 +119,7 @@ Kiểm tra: `python -m pytest tests/ -q` — **89 passed**. Các thay đổi nà
 
 - Prompt yêu cầu giữ mọi thực thể/bộ lọc trong câu hỏi, gộp các sheet tháng cùng schema khi phạm vi ngày đi qua nhiều tháng, đếm mã đơn duy nhất, dùng trạng thái thực có trong dữ liệu, xử lý đúng tử số/mẫu số tỷ lệ, loại giao dịch hủy/hoàn khi tính “đã bán”, và không xếp khách vãng lai như khách có danh tính.
 - Loader Excel điền tiếp mã đơn/ngày/trạng thái/khách hàng qua các dòng sản phẩm thuộc cùng đơn khi workbook dùng ô merge. ISO date được ưu tiên để tránh `dayfirst` đảo tháng/ngày.
-- Few-shot chỉ giữ ví dụ đúng loại câu hỏi và tương thích schema. Executor từ chối `.dt.date` để lỗi ngày âm thầm đi vào retry có hướng dẫn Timestamp; retry dừng khi code và lỗi lặp, và trả đúng số lượt retry.
+- Few-shot chỉ giữ ví dụ đúng loại câu hỏi và tương thích schema. Executor gửi lỗi kiểu ngày thực tế vào retry có hướng dẫn Timestamp; retry dừng khi code và lỗi lặp, và trả đúng số lượt retry.
 
 Kiểm thử local: `python -m pytest tests/ -q` — **101 passed**. Notebook đã đặt `RUN_TAG="fix_context_v5"`; `datamate-code.zip` được tạo lại gồm 18 file `src/` và `prompts/`, đã đối chiếu hash và không chứa `__pycache__`/`.pyc`.
 
@@ -140,3 +140,62 @@ So với context-v5, số abstain giảm 104 và số câu đúng tăng 6, nhưn
 Trong 25 lỗi thực thi cuối cùng có 4 `DateTypeError`, 3 `KeyError: 'Thời gian'`, 2 lỗi import `time`, cùng một số lỗi tên cột/biến, kiểu dữ liệu và cú pháp. Đáng chú ý, lỗi runtime giảm mạnh nhưng 153 câu sai giá trị cho thấy điểm nghẽn hiện tại chuyển sang diễn giải câu hỏi và nghiệp vụ, không chỉ khả năng sinh code chạy được. Ví dụ trong CSV: câu doanh thu tháng 5/2025 ở `biz_102` đúng `2.11%`; câu xếp hạng top khách tháng 4 vẫn đưa các biến thể “khách lẻ” vào kết quả.
 
 **Kết luận:** trên sample này 14B INT8 chạy code thành công/ít abstain hơn nhưng PA thấp hơn đáng kể và chậm hơn; chưa nên chạy toàn bộ 3.000 câu. Ưu tiên phân tích/fix các sai lệch kỳ lọc, trạng thái và mặt hàng cụ thể, sau đó đánh giá lại cùng sample. Nguồn: `context-14b/eval_summary.json`, `context-14b/error_analysis.csv`.
+
+### Triển khai sau error analysis 14B
+
+Đã kiểm tra lại `error_analysis.csv`: có **30** đáp án number/percent bằng 0 và cả 30 bị chấm sai (không phải 28 như ước lượng trong plan). Mẫu này chứng minh zero là tín hiệu rủi ro đáng kiểm tra, nhưng không đủ để cấm mọi đáp án zero.
+
+Đã triển khai:
+
+- Bản thử nghiệm lúc đầu bật ba candidate code lấy mẫu độc lập ở temperature 0.2; từng candidate có retry riêng và chỉ chấp nhận khi đa số khớp. **Cơ chế này đã được gỡ** ở mục “Theo dõi latency và bỏ ensemble candidate” bên dưới; không dùng để chạy tiếp.
+- Nếu code tạo zero number/percent từ DataFrame đã lọc rỗng, executor báo lỗi để retry; retry cho model danh sách giá trị categorical thực tế. Không có bộ lọc rỗng hoặc kết quả khác zero thì không bị ảnh hưởng.
+- Schema và retry context đưa các giá trị phân loại có cardinality thấp vào prompt và gợi ý giá trị gần nhất cho literal filter bị sai. Prompt nhấn mạnh kiểm tra giá trị lọc, dùng ngày chính xác và không từ chối câu hỏi chỉ vì kết quả lọc rỗng.
+- Loader giữ nguyên từng sheet và tạo thêm bảng hợp nhất cho các sheet cùng schema có tên tháng rõ ràng, kèm `__source_month`/`__source_sheet`; prompt yêu cầu lọc theo tháng nguồn khi thiếu cột ngày. Đã xác minh trên workbook thật của `biz_102`: 18 sheet, 86.029 dòng hợp nhất, từ `2025-01` đến `2026-06`.
+- Cho phép import `time`; bỏ chặn tĩnh toàn bộ `.dt.date`, vì grouping theo ngày hợp lệ. Lỗi so sánh date/Timestamp vẫn đi qua xử lý exception/retry.
+
+Kiểm thử trước khi bỏ ensemble: `python -m pytest tests/ -q` — 112 passed. Sau khi gỡ multi-candidate, `python -m pytest tests/ -q` — **107 passed**. Notebook JSON và code cells parse được; workbook `biz_102` thật đã xác nhận tạo bảng hợp nhất đúng 18 kỳ tháng. Đã làm mới `datamate_code.zip` (18 file source/prompt, không chứa bytecode). Chưa tự động xóa giao dịch hủy/hoàn trên mọi bảng (sẽ làm hỏng câu hỏi về tỷ lệ hủy), không học ngưỡng từ nhãn 200 câu đánh giá và không khẳng định các zero khác đều do filter sai.
+
+### Theo dõi latency và bỏ ensemble candidate — 2026-11-01
+
+Run 14B trước (`context_v5a_14b_int8`) đã xử lý 200 câu trong tổng cộng **8.015,73 giây (~2 giờ 13 phút)** theo `eval_summary.json`, tương đương **40,08 giây/câu**.
+
+Với run `context_v5b_14b_int8_ensemble3`, các log đầu hiện hiển thị khoảng **51–114 giây/câu**; riêng các lượt sinh/retry được log tốn khoảng **11–38 giây**, còn mỗi lần chạy code tốn khoảng **0.0–0.1 giây**. `LLM generation attempt 1 took 0.0s` trong RetryEngine không bao gồm sinh candidate ban đầu: candidate đã được tạo trước theo batch, nên đây không phải thời gian inference bằng 0.
+
+Lưu ý: ngoại suy sơ bộ 14–32 giờ cho 1.000 câu từ vài câu đầu (51–114 giây/câu) đã bị thay thế bởi số liệu wall-clock hoàn chỉnh bên dưới; không dùng dải ngoại suy ngắn đó làm ETA.
+
+**Việc tối ưu trước khi chạy 1.000 câu:**
+
+1. Đo wall-clock trên batch đại diện sau khi quay về một candidate, rồi so trực tiếp cùng model/run cũ.
+2. Đo thời gian từng retry và số lượt retry; tối ưu lại `MAX_RETRIES` riêng nếu execution errors vẫn chiếm đáng kể.
+3. Với prompt lớn, đánh giá giảm schema/examples hoặc cache prompt theo business mà không loại bỏ cột/giá trị cần để trả lời chính xác.
+
+**Quyết định tại thời điểm ghi log:** ensemble có vẻ chậm hơn run cũ theo các câu đầu, nhưng chưa đủ dữ liệu để kết luận mức tăng latency ổn định. Phần khuyến nghị dưới đây đã được cập nhật sau khi gỡ ensemble.
+
+Sau khi xem log tiếp và cân nhắc mục tiêu chạy lớn, đã **gỡ hẳn tính năng 3 candidate** thay vì chỉ đặt count về 1: pipeline quay về một chuỗi generate/retry cho mỗi câu; notebook bỏ hàm batch candidate, cấu hình/metadata candidate và preflight chữ ký tương ứng. Run tag đổi sang `context_v5c_14b_int8_single` để không đọc tiếp output của run ensemble. Cấu hình sampling đơn trong notebook là temperature `0.0` như run 14B trước. Giữ nguyên các cải tiến khác (empty-filter retry, fuzzy category suggestions, combined monthly sheets, cache-module preflight).
+
+Đây là thay đổi cấu hình cho lần chạy tiếp theo; run Kaggle đang chạy không tự đổi cấu hình. Nếu đã có output dưới tag ensemble, không dùng output đó làm kết quả run single. Chưa có số đo wall-clock cuối của ensemble và chưa benchmark run single mới.
+
+### Kết quả benchmark single sau cải tiến — 2026-11-02
+
+Đã đọc artifacts mới trong `context-14b/`. `eval_summary.json` ghi run tag `context_v5c_14b_int8_single`, sample 200/3.000, seed 42. Đây là lần chạy **single candidate** sau khi bỏ ensemble; summary không lưu model ID hay hash danh sách sample, nên so sánh dưới đây dựa trên run tag, seed và kích thước sample.
+
+| Run | PA mẫu | PA có trọng số | Đúng / sai / abstain | Thời gian TB/câu | Tổng thời gian |
+|---|---:|---:|---:|---:|---:|
+| 14B INT8 trước cải tiến (`context_v5a`) | -0.765 | -0.7618 | 11 / 164 / 25 | 40,08 giây | 8.015,73 giây |
+| 14B INT8 single mới (`context_v5c`) | **-0.575** | **-0.5786** | **24 / 139 / 37** | **39,50 giây** | **7.899,65 giây** |
+
+PA tăng **0,190 điểm**; đúng tăng 13, sai giảm 25, abstain tăng 12. Đây là cải thiện rõ trên sample, dù PA vẫn âm và số câu sai vẫn cao. Thời gian gần như không đổi: giảm khoảng **116 giây trên cả 200 câu** (~1,45%), không cho thấy ensemble là nguyên nhân của toàn bộ latency trước đó.
+
+Thay đổi rõ nhất theo loại câu là date: run cũ có 2 đúng, 0 sai, 8 abstain; run mới có **8 đúng, 2 sai, 0 abstain**. Điều này phù hợp với việc bỏ chặn `.dt.date` và để lỗi kiểu ngày thực sự đi vào retry, nhưng đây là so sánh hai run tổng thể, không phải ablation chứng minh một sửa đổi đơn lẻ gây ra toàn bộ mức tăng.
+
+Các lỗi vẫn còn đáng kể: run mới có 135 `wrong_value`, 32 `abstain_exec_error`, 5 `abstain_gate`, 3 `false_unanswerable` và 1 `missed_unanswerable`. Trong 32 execution abstains, 14 là `EmptyFilterError` và 12 là `KeyError`. Có 4 đáp án numeric zero, cả 4 đều sai, giảm từ 30 zero sai trong run trước; không đủ để kết luận các thay đổi empty-filter đã sửa 26 câu cụ thể vì chưa đối chiếu được output cũ từng ID và sample hash không có trong summary.
+
+Thời gian thực tế 39,50 giây/câu tương đương phép nhân tuyến tính khoảng **11 giờ cho 1.000 câu**; đây vẫn chỉ là ngoại suy, không phải cam kết runtime. Kết quả này thay cho ước tính 14–32 giờ dựa trên vài câu đầu.
+
+**Kết luận:** PA được cải thiện rõ và latency trung bình giữ gần mức run cũ. Giữ cấu hình single cho vòng kế tiếp; ưu tiên xử lý `EmptyFilterError`/`KeyError` và 135 sai giá trị. Cần xác nhận cùng chính xác question IDs bằng sample signature ở lần benchmark sau, đồng thời chạy ablation nếu muốn xác định sửa đổi nào đóng góp bao nhiêu.
+
+### Kaggle preflight stale module cache — 2026-11-01
+
+Notebook từng báo `RetryEngine.run` thiếu `initial_response`, dù source lúc đó có tham số này. Nguyên nhân trong preflight cũ: cell chỉ xóa cache `src.*`, nhưng `src.predict` import các module con bằng tên `modules.*` (`from modules.retry_engine import RetryEngine`). Nếu `modules.retry_engine` cũ vẫn còn trong `sys.modules`, `importlib.reload(src.predict)` tiếp tục gắn class RetryEngine cũ vào pipeline. Vì vậy lỗi đó không tự nó chứng minh upload sai. Tham số `initial_response` sau đó được gỡ cùng tính năng multi-candidate; phần cache fix vẫn còn hữu ích cho đồng bộ module.
+
+Đã sửa `kaggle_train_baseline.ipynb`: trước import, preflight xóa cả `src.*` lẫn `modules.*`; sau import, in đường dẫn `retry_engine.py` và kiểm tra các module đều nằm dưới `CODE_DIR`. Đã tái hiện Python stale cache và xác nhận cache cũ bị xóa, module nạp từ source mới. Cell notebook compile được.

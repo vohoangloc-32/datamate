@@ -8,11 +8,7 @@ a wrong answer.
 
 import logging
 import math
-from datetime import date
-from typing import Any, Dict, List, Optional
-
-import pandas as pd
-
+from typing import Any, Dict, Optional
 from .question_understanding import QuestionInfo
 
 logger = logging.getLogger(__name__)
@@ -63,7 +59,6 @@ class ConfidenceGate:
             Maximum retries allowed.
         second_answer : Dict[str, Any], optional
             A second answer from a dual-run (for consistency check).
-
         Returns
         -------
         Dict[str, Any]
@@ -186,5 +181,4 @@ class ConfidenceGate:
                 return abs(float(v1) - float(v2)) < 0.01
             except (ValueError, TypeError):
                 return str(v1) == str(v2)
-
         return str(v1) == str(v2)

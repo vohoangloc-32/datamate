@@ -117,10 +117,10 @@ def test_datetime_type_error_retry_context_lists_datetime_dtypes():
 def test_dt_date_usage_retries_with_timestamp_guidance():
     prompts = []
     responses = iter([
-        "orders['order_date'] = pd.to_datetime(['2025-01-01'] * len(orders))\n"
-        "orders = orders[orders['order_date'].dt.date == date(2025, 1, 1)]\n"
+        "orders['order_date'] = pd.to_datetime(pd.Series(['2025-01-01'] * len(orders))).dt.date\n"
+        "orders = orders[orders['order_date'] >= pd.Timestamp('2025-01-01')]\n"
         "result = len(orders)\nanswer_type = 'number'",
-        "orders['order_date'] = pd.to_datetime(['2025-01-01'] * len(orders))\n"
+        "orders['order_date'] = pd.to_datetime(pd.Series(['2025-01-01'] * len(orders)))\n"
         "orders = orders[orders['order_date'] == pd.Timestamp('2025-01-01')]\n"
         "result = len(orders)\nanswer_type = 'number'",
     ])
@@ -146,8 +146,49 @@ def test_dt_date_usage_retries_with_timestamp_guidance():
     assert result.result == 1
     assert retries == 1
     assert len(prompts) == 2
-    assert "keep values as pandas timestamps" in prompts[1]
+    assert "order_date" in prompts[1]
     assert "pd.Timestamp(...)" in prompts[1]
+
+
+def test_empty_filter_retries_with_actual_category_values():
+    prompts = []
+    responses = iter([
+        "filtered = orders[orders['status'] == 'Canceled']\n"
+        "result = int(filtered['amount'].sum())\nanswer_type = 'number'",
+        "filtered = orders[orders['status'] == 'Cancelled']\n"
+        "result = int(filtered['amount'].sum())\nanswer_type = 'number'",
+    ])
+
+    def generate(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    tables = {
+        "orders": pd.DataFrame({
+            "status": ["Completed", "Cancelled"],
+            "amount": [10, 20],
+        }),
+    }
+    engine = RetryEngine(
+        code_executor=CodeExecutor(),
+        prompt_builder=PromptBuilder(few_shot_examples=[]),
+        llm_generate_fn=generate,
+        max_retries=1,
+    )
+
+    result, retries = engine.run(
+        prompt="Question: Total for cancelled orders?",
+        tables=tables,
+        as_of_date="2025-01-01",
+        expected_type="number",
+    )
+
+    assert result.success is True
+    assert result.result == 20
+    assert retries == 1
+    assert "Completed" in prompts[1]
+    assert "Cancelled" in prompts[1]
+    assert "close to observed value 'Cancelled'" in prompts[1]
 
 
 def test_repeated_code_and_error_stops_retry_and_includes_file_feedback():

@@ -162,3 +162,34 @@ def test_load_xlsx_fills_merged_order_metadata_within_each_order(tmp_path):
     ]
     assert pd.isna(orders["Tên khách hàng"].iloc[2])
     assert pd.isna(orders["Tên khách hàng"].iloc[3])
+
+
+def test_load_xlsx_combines_compatible_monthly_sheets(tmp_path):
+    biz_dir = tmp_path / "biz_monthly"
+    biz_dir.mkdir()
+    xlsx_file = biz_dir / "sales.xlsx"
+    with pd.ExcelWriter(xlsx_file) as writer:
+        pd.DataFrame({
+            "order_id": [1, 2],
+            "amount": [100, 200],
+        }).to_excel(writer, sheet_name="T01_2025", index=False)
+        pd.DataFrame({
+            "order_id": [3],
+            "amount": [300],
+        }).to_excel(writer, sheet_name="02.2025", index=False)
+
+    tables = load_business_data(str(biz_dir), use_cache=False)
+    combined = tables["sales__monthly_combined"]
+
+    assert len(combined) == 3
+    assert combined["order_id"].tolist() == [1, 2, 3]
+    assert combined["__source_month"].tolist() == [
+        "2025-01",
+        "2025-01",
+        "2025-02",
+    ]
+    assert combined["__source_sheet"].tolist() == [
+        "T01_2025",
+        "T01_2025",
+        "02.2025",
+    ]

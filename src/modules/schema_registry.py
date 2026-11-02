@@ -20,7 +20,8 @@ class ColumnInfo:
 
     __slots__ = ("name", "dtype", "non_null_count", "total_count",
                  "unique_count", "sample_values", "min_val", "max_val",
-                 "is_numeric", "is_datetime", "is_categorical")
+             "is_numeric", "is_datetime", "is_categorical",
+             "category_values")
 
     def __init__(self, name: str, series: pd.Series):
         self.name = name
@@ -39,6 +40,11 @@ class ColumnInfo:
             and not self.is_datetime
             and self.unique_count <= 50
             and self.non_null_count > 0
+        )
+        self.category_values = (
+            non_null.unique().tolist()
+            if self.is_categorical and self.unique_count <= 20
+            else []
         )
 
         if self.is_numeric and self.non_null_count > 0:
@@ -64,6 +70,7 @@ class ColumnInfo:
             "is_numeric": self.is_numeric,
             "is_datetime": self.is_datetime,
             "is_categorical": self.is_categorical,
+            "categories": self.category_values,
         }
 
 
@@ -91,7 +98,7 @@ class TableSchema:
         for col in self.columns:
             parts = [f"  - {col.name} ({col.dtype})"]
             if col.is_categorical and col.unique_count <= 20:
-                vals = col.sample_values[:max_sample_values]
+                vals = col.category_values
                 parts.append(f" [categories: {vals}]")
             elif include_samples and col.sample_values:
                 vals = col.sample_values[:3]

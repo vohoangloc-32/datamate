@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
 
@@ -364,15 +364,12 @@ class DataMatePipeline:
                 max_prompt_tokens=self._max_prompt_tokens,
             )
 
-            # 5. Format answer
-            answer = format_answer(
-                value=exec_result.result,
-                answer_type=exec_result.answer_type,
-            )
-
             # 6. Confidence gate
             final_answer = self.confidence_gate.evaluate(
-                answer=answer,
+                answer=format_answer(
+                    value=exec_result.result,
+                    answer_type=exec_result.answer_type,
+                ),
                 question_info=q_info,
                 execution_retries=retries,
             )

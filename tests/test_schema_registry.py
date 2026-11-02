@@ -59,3 +59,16 @@ def test_schema_registry(sample_data):
     prompt_str = registry.to_prompt_string()
     assert "products" in prompt_str
     assert "orders" in prompt_str
+
+
+def test_schema_includes_all_low_cardinality_values():
+    schema = TableSchema(
+        "orders",
+        pd.DataFrame({"status": ["Completed", "Cancelled", "Returned"]}),
+    )
+
+    prompt = schema.to_prompt_string()
+
+    assert "Completed" in prompt
+    assert "Cancelled" in prompt
+    assert "Returned" in prompt

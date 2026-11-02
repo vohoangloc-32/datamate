@@ -39,12 +39,15 @@ IMPORTANT RULES:
 2. Do not read or reload data from files. The provided DataFrames are the only data sources.
 3. Write Python code that computes the answer and assigns it to a variable called `result`.
 4. `result` must be a single value matching the expected answer type.
-5. If a required table or field is absent from AVAILABLE DATA, do not guess its name or substitute another field; set `result = None` and `answer_type = "unanswerable"`.
+5. Set `answer_type = "unanswerable"` only when a required table, field, or requested entity is absent from AVAILABLE DATA. For a count or sum, no matching rows may be a valid zero; verify filters against the actual category values before deciding.
 6. Apply the business rules provided below (e.g., how to compute revenue, what counts as a "week", etc.).
 7. Handle edge cases: empty DataFrames, missing values, division by zero.
 8. For date filtering, use the as_of_date to resolve relative time expressions.
    Keep pandas datetime columns as timestamps; compare with pd.Timestamp values.
-   Do not convert a whole datetime column to Python date objects with .dt.date.
+   For a calendar day, filter from its start (inclusive) to the next day (exclusive);
+   do not compare a timestamp column to a midnight timestamp with exact equality.
+   `.dt.date` may be used for date grouping or when comparing with Python date values,
+   but do not assign converted dates back to a timestamp column.
 9. Do NOT use print() — just assign to `result`.
 10. For string answers, return the exact name as it appears in the data.
 11. For numeric answers, return an integer if exact, or float rounded to 2 decimals.
@@ -53,12 +56,13 @@ IMPORTANT RULES:
 14. For boolean answers, return True or False.
 15. For list answers, return a Python list in the order requested.
 16. For table answers, return a dict with "columns" (list of strings) and "rows" (list of lists).
-17. Do NOT write any import statements. `pd`, `np`, `math`, `re`, `datetime`, `dt`, `date` and `timedelta` are already available.
+17. Avoid import statements because `pd`, `np`, `math`, `re`, `datetime`, `dt`, `date` and `timedelta` are already available. If needed, `time` is the only additional permitted import.
 18. Define every variable before using it; the code must be complete and self-contained.
 19. Preserve every explicit question entity/filter; never answer an entity-specific count with a generic count.
-20. For date ranges spanning same-schema monthly tables, combine all matching tables. Order counts use distinct order IDs; a row may represent a product within an order.
+20. For date ranges spanning monthly tables, prefer a `__monthly_combined` table when available and filter by its `__source_month` column if no date column exists. Use month-source values only for whole-month ranges; if the question needs day precision and no date column exists, do not treat an entire month as a day. Otherwise combine all matching tables with the same schema. Order counts use distinct order IDs; a row may represent a product within an order.
 21. Sold-order counts and revenue/customer spending exclude cancelled, returned, or refunded transactions unless asked otherwise. Use actual status values in the data; follow documented customer aliases and do not rank unidentified guests as named customers.
 22. For a status rate, count matching-status records in the numerator and all applicable records in the denominator.
+23. Before returning numeric zero after filtering, verify that each filter value matches the actual values shown in AVAILABLE DATA. An empty filtered DataFrame can indicate a mismatched column value; use the retry context's category values to correct it.
 
 OUTPUT FORMAT:
 Your response must be a Python code block that:
@@ -387,9 +391,9 @@ class PromptBuilder:
             tail = limit - 3 - head
             return text[:head] + "..." + text[-tail:]
 
-        code_limits = (None, 2000, 1000, 500)
-        error_limits = (None, 1000, 500, 250)
-        context_limits = (None, 1500, 750, 300, 0)
+        code_limits = (None, 2000, 1000, 500, 250, 0)
+        error_limits = (None, 1000, 500, 250, 100, 50)
+        context_limits = (None, 1500, 750, 300, 150, 75, 0)
         for base in base_prompts:
             for context_limit in context_limits:
                 if available_context is None:

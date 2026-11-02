@@ -5,8 +5,12 @@ Manages the LLM code generation → execution → retry cycle.
 Feeds error messages back to the LLM for self-correction up to N retries.
 """
 
+import ast
+import difflib
 import logging
+import re
 import time
+import unicodedata
 from typing import Callable, Dict, Optional, Tuple
 
 import pandas as pd
@@ -75,7 +79,6 @@ class RetryEngine:
             Counts tokens using the generation model's tokenizer.
         max_prompt_tokens : int, optional
             Maximum input tokens allowed for a retry prompt.
-
         Returns
         -------
         Tuple[ExecutionResult, int]
@@ -149,7 +152,9 @@ class RetryEngine:
                                 prompt,
                                 result.code,
                                 error_msg,
-                                available_context=self._available_context(tables, error_msg),
+                                available_context=self._available_context(
+                                    tables, error_msg
+                                ),
                                 token_counter=token_counter,
                                 max_tokens=max_prompt_tokens,
                             )
@@ -218,11 +223,23 @@ class RetryEngine:
                         error_msg = error_msg[:1000] + "\n... (truncated)"
 
                     try:
+                        available_context = self._available_context(
+                            tables, error_msg
+                        )
+                        if "EmptyFilterError" in error_message:
+                            suggestions = self._filter_value_suggestions(
+                                tables,
+                                result.code,
+                            )
+                            if suggestions:
+                                available_context = (
+                                    f"{available_context or ''}\n{suggestions}"
+                                )
                         current_prompt = self.prompt_builder.build_retry_prompt(
                             prompt,
                             result.code,
                             error_msg,
-                            available_context=self._available_context(tables, error_msg),
+                            available_context=available_context,
                             token_counter=token_counter,
                             max_tokens=max_prompt_tokens,
                         )
@@ -268,8 +285,14 @@ class RetryEngine:
             "KeyError",
             "FileNotFoundError",
             "FileAccessError",
+            "EmptyFilterError",
         )):
-            context = self._schema_context(tables, mapping, include_dtypes=False)
+            context = self._schema_context(
+                tables,
+                mapping,
+                include_dtypes=False,
+                include_values=True,
+            )
             if any(marker in error_message for marker in (
                 "FileNotFoundError",
                 "FileAccessError",
@@ -277,6 +300,12 @@ class RetryEngine:
                 context = (
                     "The data is already loaded in these DataFrames. Do not read or "
                     "reload files; use only these tables and columns.\n" + context
+                )
+            if "EmptyFilterError" in error_message:
+                context = (
+                    "A numeric result was zero after a DataFrame filter matched "
+                    "no rows. Verify every filter against the actual category "
+                    "values below before returning zero.\n" + context
                 )
             return context[:6000]
 
@@ -310,20 +339,133 @@ class RetryEngine:
 
         return None
 
+    def _filter_value_suggestions(
+        self,
+        tables: Dict[str, pd.DataFrame],
+        code: str,
+    ) -> Optional[str]:
+        """Suggest observed categories close to string literals used in filters."""
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return None
+
+        table_variables = self.executor.get_table_var_mapping(tables)
+        variable_tables = {
+            variable: table
+            for table, variable in table_variables.items()
+        }
+        variable_tables.update({
+            table: table
+            for table in tables
+            if table.isidentifier()
+        })
+        if len(tables) == 1:
+            only_table = next(iter(tables))
+            variable_tables["df"] = only_table
+
+        def column_reference(node):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+            ):
+                return variable_tables.get(node.value.id), node.slice.value
+            return None, None
+
+        def normalize(value):
+            text = unicodedata.normalize("NFKD", str(value).casefold())
+            text = "".join(
+                character for character in text
+                if not unicodedata.combining(character)
+            ).replace("đ", "d")
+            return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+        suggestions = []
+        seen_suggestions = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            for operator, comparator in zip(node.ops, node.comparators):
+                if not isinstance(operator, (ast.Eq, ast.NotEq)):
+                    continue
+                left_table, left_column = column_reference(node.left)
+                if left_table is not None and isinstance(comparator, ast.Constant):
+                    table_name, column, literal = (
+                        left_table,
+                        left_column,
+                        comparator.value,
+                    )
+                else:
+                    right_table, right_column = column_reference(comparator)
+                    if right_table is None or not isinstance(node.left, ast.Constant):
+                        continue
+                    table_name, column, literal = (
+                        right_table,
+                        right_column,
+                        node.left.value,
+                    )
+                if not isinstance(literal, str) or table_name is None:
+                    continue
+
+                series = tables[table_name][column]
+                if series.nunique(dropna=True) > 50:
+                    continue
+                values = [str(value) for value in series.dropna().unique()]
+                normalized_values = {
+                    normalize(value): value for value in values
+                }
+                normalized_literal = normalize(literal)
+                closest = difflib.get_close_matches(
+                    normalized_literal,
+                    normalized_values,
+                    n=1,
+                    cutoff=0.72,
+                )
+                if closest and normalized_values[closest[0]] != literal:
+                    suggestion = (
+                        f"`{table_name}.{column}` filter {literal!r} is close to "
+                        f"observed value {normalized_values[closest[0]]!r}."
+                    )
+                    if suggestion not in seen_suggestions:
+                        seen_suggestions.add(suggestion)
+                        suggestions.append(suggestion)
+
+        if not suggestions:
+            return None
+        return (
+            "Closest observed category values for generated filters "
+            "(suggestions; verify before using):\n- "
+            + "\n- ".join(suggestions[:5])
+        )
+
     @staticmethod
     def _schema_context(
         tables: Dict[str, pd.DataFrame],
         mapping: Dict[str, str],
         include_dtypes: bool = False,
+        include_values: bool = False,
     ) -> str:
         table_columns = []
         for table, dataframe in tables.items():
             variable = mapping[table]
-            columns = ", ".join(
-                f"{column} ({dataframe[column].dtype})"
-                if include_dtypes else str(column)
-                for column in dataframe.columns[:80]
-            )
+            column_descriptions = []
+            for column in dataframe.columns[:80]:
+                series = dataframe[column]
+                description = (
+                    f"{column} ({series.dtype})"
+                    if include_dtypes else str(column)
+                )
+                if include_values and series.nunique(dropna=True) <= 20:
+                    values = [
+                        str(value)[:80]
+                        for value in series.dropna().unique()[:20]
+                    ]
+                    if values:
+                        description += f" values={values}"
+                column_descriptions.append(description)
+            columns = ", ".join(column_descriptions)
             if len(dataframe.columns) > 80:
                 columns += ", ..."
             table_columns.append(

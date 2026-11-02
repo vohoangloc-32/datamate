@@ -120,6 +120,9 @@ confidence gate applies heuristics and can abstain when confidence is low.
 Prompt construction also enforces the model's input-token budget and abstains
 if required context cannot fit.
 
+When a numeric zero comes from an empty derived DataFrame, the retry prompt
+includes the real category values so the model can correct a mismatched filter.
+
 ### 1. Local Prediction CLI
 ```bash
 python src/predict.py \
