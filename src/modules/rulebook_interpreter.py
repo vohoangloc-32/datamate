@@ -40,14 +40,47 @@ class Rulebook:
         return [r for r in self.rules if r.category == category]
 
     def get_relevant_rules(self, question: str) -> List[BusinessRule]:
-        """Find rules relevant to a given question based on keyword matching."""
-        question_lower = question.lower()
+        """Find rules relevant to a given question based on flexible keyword matching."""
+        if not question:
+            return self.rules
+
+        def _strip_accents(text: str) -> str:
+            text = text.replace("đ", "d").replace("Đ", "D")
+            nfkd = unicodedata.normalize("NFKD", text)
+            return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+        q_norm = _strip_accents(question)
+        q_words = set(q_norm.split())
+
+        # High-value business phrases
+        key_phrases = [
+            "doanh thu", "ban chay", "cong no", "ton kho", "gia von",
+            "lai gop", "lai rong", "don huy", "tra hang", "nhap hang",
+            "khach hang", "khach le", "vat", "phi giao", "giam gia",
+            "tet", "ca sang", "ca chieu", "thuoc ke don", "het han"
+        ]
+
         relevant = []
         for rule in self.rules:
-            # Check if the rule keyword appears in the question
-            if rule.keyword.lower() in question_lower:
+            # 1. Exact keyword match
+            if rule.keyword.lower() in question.lower():
                 relevant.append(rule)
-        return relevant
+                continue
+
+            k_norm = _strip_accents(rule.keyword)
+            # 2. Key phrase match between question and rule keyword
+            if any(phrase in q_norm and phrase in k_norm for phrase in key_phrases):
+                relevant.append(rule)
+                continue
+
+            # 3. Word token intersection (excluding common stop words)
+            stop = {"don", "mot", "theo", "cac", "va", "la", "o", "nhu", "trong", "cua", "cho", "ngay", "thang"}
+            k_words = set(k_norm.split()) - stop
+            inter = k_words & q_words
+            if inter and any(len(w) >= 3 for w in inter):
+                relevant.append(rule)
+
+        return relevant if relevant else self.rules
 
     def get_vocabulary_match(self, term: str) -> Optional[str]:
         """Look up a term in the rulebook vocabulary."""

@@ -123,6 +123,19 @@ if required context cannot fit.
 When a numeric zero comes from an empty derived DataFrame, the retry prompt
 includes the real category values so the model can correct a mismatched filter.
 
+### Structured analysis-plan pilot
+
+The pipeline has an opt-in `--analysis-plan` mode. It asks the model for a
+strict JSON plan (table, aggregation, filters, date interval, grouping, and
+output shape), validates names/values against the loaded DataFrames, and
+executes supported `sum`, `count`, `nunique`, `mean`, `min`, and `max`
+operations without evaluating generated Python. Invalid or unsupported plans
+fall back to the existing pandas-code/retry path. This pilot currently supports
+numeric, string, list, and table plans; percent, date, boolean, and
+unanswerable questions skip planning and use the existing path directly. An
+unsupported plan may require a second model call, so measure latency and plan
+coverage before enabling it broadly. It is disabled by default.
+
 ### 1. Local Prediction CLI
 ```bash
 python src/predict.py \
@@ -130,7 +143,8 @@ python src/predict.py \
     --output-dir result/ \
     --model-dir /path/to/qwen2.5-coder-14b \
     --max-retries 3 \
-    --confidence-threshold 0.35
+    --confidence-threshold 0.35 \
+    --analysis-plan
 ```
 
 ### 2. Local Penalized Accuracy (PA) Evaluation

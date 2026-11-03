@@ -160,6 +160,12 @@ def format_list(value: Any) -> Optional[List]:
     if not isinstance(value, list):
         value = [value]
 
+    nested_types = (
+        list, tuple, dict, set, np.ndarray, pd.Series, pd.Index, pd.DataFrame
+    )
+    if any(isinstance(item, nested_types) for item in value):
+        return None
+
     # Format each element
     formatted = []
     for item in value:

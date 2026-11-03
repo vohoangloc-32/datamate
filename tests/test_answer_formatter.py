@@ -91,6 +91,23 @@ def test_format_list():
     assert format_list("single_string") == ["single_string"]
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        [["2026-03", 5827400]],
+        [{"month": "2026-03"}],
+        '[[\"2026-03\", 5827400]]',
+        np.array([["2026-03", 5827400]], dtype=object),
+    ],
+)
+def test_format_list_rejects_nested_elements(value):
+    assert format_list(value) is None
+    assert format_answer(value, "list") == {
+        "type": "abstain",
+        "reason": "formatting_failure",
+    }
+
+
 def test_format_table():
     df = pd.DataFrame({"col_a": [1, 2], "col_b": ["x", "y"]})
     res = format_table(df)

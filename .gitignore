@@ -7,3 +7,4 @@ result/
 *.log
 node_modules/
 log.txt
+context_*/

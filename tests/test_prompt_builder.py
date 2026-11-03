@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from src.modules.prompt_builder import PromptBuilder, PromptTokenLimitError
-from src.modules.question_understanding import QuestionInfo
+from src.modules.question_understanding import QuestionAnalyzer, QuestionInfo
 from src.modules.schema_registry import SchemaRegistry
 
 
@@ -73,6 +73,35 @@ def test_prompt_marks_available_schema_authoritative_and_forbids_file_reads():
     assert "Use actual status values in the data" in prompt
     assert "For a status rate" in prompt
     assert "Their table variables and columns are not available unless listed in AVAILABLE DATA" in prompt
+
+
+def test_prompt_includes_resolved_unaccented_recent_day_range():
+    question = "7 ngay gan nhat cua hang ban duoc bao nhieu"
+    question_info = QuestionAnalyzer().analyze(
+        question,
+        pd.Timestamp("2024-05-18").date(),
+    )
+    prompt_inputs = _prompt_inputs()
+    prompt_inputs["question"] = question
+    prompt = PromptBuilder(few_shot_examples=[]).build(
+        **prompt_inputs,
+        question_info=question_info,
+    )
+
+    assert "'7 ngay gan nhat' → 2024-05-12 to 2024-05-18" in prompt
+
+
+def test_analysis_plan_prompt_requires_json_not_executable_code():
+    prompt = PromptBuilder(few_shot_examples=[]).build(
+        **_prompt_inputs(),
+        mode="analysis_plan",
+    )
+
+    assert "Return one JSON object only" in prompt
+    assert '"end_date_exclusive"' in prompt
+    assert "Do not write Python, SQL, markdown, or commentary." in prompt
+    assert "Write Python code to answer this question." not in prompt
+    assert "## EXAMPLES" not in prompt
 
 
 def test_default_examples_never_convert_datetime_columns_to_python_dates():

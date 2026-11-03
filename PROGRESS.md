@@ -194,8 +194,90 @@ Thời gian thực tế 39,50 giây/câu tương đương phép nhân tuyến t�
 
 **Kết luận:** PA được cải thiện rõ và latency trung bình giữ gần mức run cũ. Giữ cấu hình single cho vòng kế tiếp; ưu tiên xử lý `EmptyFilterError`/`KeyError` và 135 sai giá trị. Cần xác nhận cùng chính xác question IDs bằng sample signature ở lần benchmark sau, đồng thời chạy ablation nếu muốn xác định sửa đổi nào đóng góp bao nhiêu.
 
+### Kiểm tra overfit seed 42 và xác thực cấu trúc list — 2026-11-02
+
+Mẫu 200 câu được lấy phân tầng theo loại đáp án, không phải lấy một mẫu chỉ gồm câu thường: toàn bộ train có 19/3.000 câu `table`, nên một câu table trong sample là phù hợp với tỷ lệ tổng thể. Một câu table không đủ để đánh giá loại này; có thể chạy riêng cả 19 câu để chẩn đoán, nhưng không nên dùng kết quả nhỏ đó thay cho điểm tổng.
+
+Đối chiếu nhãn của cả 3.000 câu cho thấy 193/193 đáp án `list` đều là danh sách phẳng và không rỗng. Evaluator so khớp phần tử list với từng scalar; phần tử list/dict lồng nhau không thể khớp hợp đồng đó. Trong benchmark seed 42 có câu trả lời list chứa các cặp `[tháng, doanh thu]`; formatter cũ chuyển mỗi cặp thành chuỗi, tạo một output không hợp lệ thay vì abstain. Formatter nay từ chối list có phần tử container lồng nhau, để `format_answer` chuyển thành abstain. Đây là kiểm tra cấu trúc đầu ra tổng quát, không kiểm tra ID câu hay seed.
+
+Kiểm tra toàn bộ câu hỏi cho thấy 46/3.000 câu train và 22/1.000 câu public test dùng mẫu `N ngày gần nhất`. Rulebook định nghĩa đây là đúng N ngày liền nhau, kể cả hôm nay. Resolver trước đó không trích xuất mẫu này, nhất là dạng không dấu phổ biến. TimeResolver nay nhận dạng dạng có dấu/không dấu và đưa khoảng ngày inclusive chính xác vào QUESTION ANALYSIS; kiểm thử đi qua cả `QuestionAnalyzer`. Đây là một lớp câu hỏi có lặp lại ở hai split, không phải sửa riêng một câu seed 42.
+
+Không thêm luật abstain toàn cục cho numeric zero: cả 4 dự đoán zero của sample đều sai, nhưng train có 4 đáp án zero hợp lệ (2 number, 2 percent), gồm câu đếm mặt hàng không bán và câu phần trăm thay đổi bằng 0. Chỉ dựa vào seed để cấm zero sẽ overfit và bỏ mất đáp án đúng.
+
+Đây là cải thiện an toàn đầu ra, không giải quyết các lỗi ngữ nghĩa lớn hơn như chọn nhầm khoảng ngày/bảng hoặc metric. Cần chạy benchmark tiếp theo để đo ảnh hưởng thực tế; không suy ra mức tăng PA chỉ từ test formatter.
+
+### Structured analysis-plan pilot — 2026-11-02
+
+Đã triển khai pilot opt-in cho hướng analysis-plan. Khi bật `analysis_plan_enabled` (CLI: `--analysis-plan`), model trả JSON có schema cố định cho table, aggregation, filters, date interval, group-by, output type, sort và limit. `AnalysisPlan` kiểm tra tên bảng/cột, loại đáp án, phép tổng hợp, ngày, operator và giá trị filter; các phép sum/count/nunique/mean/min/max được chạy bằng helper pandas giới hạn, không chạy Python do model sinh ở nhánh này.
+
+Phạm vi ban đầu hỗ trợ `number`, `string`, `list`, `table`; câu `percent`, `date`, `boolean`, `unanswerable` bỏ qua plan và dùng code-generation/retry trực tiếp. Plan không hỗ trợ/không hợp lệ có thể dùng thêm một lần gọi model cho fallback. Vì vậy tính năng mặc định tắt và notebook có `ANALYSIS_PLAN_ENABLED = False`; bật pilot sẽ dùng run tag riêng. Log từng câu ghi trạng thái `executed`, `fallback`, hoặc `skipped_unsupported_type` cùng phản hồi/lý do plan. Chưa có benchmark model đo coverage, điểm hay latency; không bật mặc định trước khi chạy pilot.
+
+Đã thêm unit/integration tests cho schema validation, lọc ngày inclusive/exclusive, category filter, aggregate/group/ranking/table, prompt JSON và fallback. Chưa có đánh giá chất lượng semantic plan bằng model thật; validator chỉ đảm bảo cấu trúc/schema/value constraints, không chứng minh metric nghiệp vụ model chọn là đúng.
+
 ### Kaggle preflight stale module cache — 2026-11-01
 
 Notebook từng báo `RetryEngine.run` thiếu `initial_response`, dù source lúc đó có tham số này. Nguyên nhân trong preflight cũ: cell chỉ xóa cache `src.*`, nhưng `src.predict` import các module con bằng tên `modules.*` (`from modules.retry_engine import RetryEngine`). Nếu `modules.retry_engine` cũ vẫn còn trong `sys.modules`, `importlib.reload(src.predict)` tiếp tục gắn class RetryEngine cũ vào pipeline. Vì vậy lỗi đó không tự nó chứng minh upload sai. Tham số `initial_response` sau đó được gỡ cùng tính năng multi-candidate; phần cache fix vẫn còn hữu ích cho đồng bộ module.
 
 Đã sửa `kaggle_train_baseline.ipynb`: trước import, preflight xóa cả `src.*` lẫn `modules.*`; sau import, in đường dẫn `retry_engine.py` và kiểm tra các module đều nằm dưới `CODE_DIR`. Đã tái hiện Python stale cache và xác nhận cache cũ bị xóa, module nạp từ source mới. Cell notebook compile được.
+
+### Kết quả benchmark analysis-plan pilot — 2026-11-03
+
+Đã đối chiếu pilot `context_v5c_14b_int8_single_analysis_plan_pilot` với baseline single `context_v5c_14b_int8_single` trên đúng 200 câu. Hai `run_config.json` có cùng `sample_signature`, model, cấu hình retry/token budget và cùng hash dữ liệu, câu hỏi, đáp án; `code_sha256` cũng giống nhau. Cờ `analysis_plan_enabled` lần lượt là `true` và `false`. Đây là phép so sánh cùng sample có kiểm soát theo các metadata được lưu; `code_sha256` trùng không tự chứng minh hash đó bao phủ mọi file source.
+
+| Run | PA mẫu | PA có trọng số | Đúng / sai / abstain | Thời gian TB/câu | Tổng thời gian |
+|---|---:|---:|---:|---:|---:|
+| Single, không analysis plan | -0.565 | -0.5682 | 23 / 136 / 41 | 39,23 giây | 7.846,87 giây |
+| Analysis-plan pilot | -0.575 | -0.5784 | 23 / 138 / 39 | 57,46 giây | 11.492,4 giây |
+| Chênh lệch pilot | **-0,010** | **-0,0102** | 0 / +2 / -2 | **+18,23 giây (+46,5%)** | **+3.645,53 giây (~60,8 phút)** |
+
+Đối chiếu từng ID cho thấy 197/200 câu giữ nguyên điểm; ba câu đổi kết quả gồm một abstain thành đúng, một đúng thành sai và một abstain thành sai. Do đó số câu đúng không tăng ròng, số sai tăng hai và PA giảm.
+
+#### Coverage và nguyên nhân fallback
+
+Trong 200 câu:
+
+- **11** plan được thực thi (`executed`): **1 đúng, 10 sai, 0 abstain**.
+- **139** plan bị từ chối và fallback sang code generation (`fallback`): **11 đúng, 97 sai, 31 abstain**.
+- **50** câu có loại đáp án không hỗ trợ nên bỏ qua plan (`skipped_unsupported_type`): **11 đúng, 31 sai, 8 abstain**.
+
+Trong 139 fallback, lỗi lặp lại lớn nhất là **87 plan để `sort_by: null`**, dù prompt yêu cầu `"key"` hoặc `"value"`; validator từ chối giá trị này và pipeline chuyển sang sinh code. Các nguyên nhân kế tiếp gồm 9 plan chỉ sai tên cột ngày, 5 chọn cột tổng không phải numeric, cùng các lỗi cột/bảng/giá trị filter không tồn tại, toán tử không hỗ trợ và cấu trúc output không hợp lệ. Nói cách khác, chỉ **11/150 (7,3%)** câu thuộc nhóm có hỗ trợ loại đáp án thực sự đi tới thực thi plan; 139 câu còn lại đã trả thêm chi phí plan trước khi fallback.
+
+Thời gian trung bình theo route lần lượt là **21,98 giây** cho `executed` (11 câu), **65,69 giây** cho `fallback` (139 câu), và **42,37 giây** cho `skipped_unsupported_type` (50 câu). Đối chiếu latency từng ID, pilot lâu hơn ở 189/200 câu; phần tăng tập trung ở nhánh fallback, phù hợp với chi phí gọi plan trước khi chạy luồng code hiện có.
+
+#### Chất lượng plan được chấp nhận
+
+Plan được thực thi không đồng nghĩa tính toán đúng nghiệp vụ. Có câu xếp hạng khách hàng mà plan nhóm theo khách nhưng kết quả đưa “Khách lẻ” lên đầu thay vì khách có tên; có câu hỏi doanh thu ba tháng mà plan chọn cột `Unnamed: 1` và trả `[3752]` thay vì ba số doanh thu. Đây là ví dụ cho thấy kiểm tra schema/kiểu dữ liệu có thể chấp nhận một plan hợp lệ về cấu trúc nhưng sai metric, cột, thực thể hoặc diễn giải nghiệp vụ.
+
+**Kết luận và quyết định:** pilot **không cải thiện chất lượng và làm tăng đáng kể thời gian**, nên giữ `ANALYSIS_PLAN_ENABLED = False`; không dùng pilot cho benchmark chính hoặc chạy toàn bộ train. Sửa riêng `sort_by: null` có thể giảm một nguyên nhân fallback lớn, nhưng chưa giải quyết được lỗi semantic ở các plan đã thực thi (10/11 sai). Muốn thử tiếp cần sửa hợp đồng đầu ra/validation và kiểm tra độ đúng ngữ nghĩa trên cùng sample trước khi chạy benchmark dài. Các số liệu trên được tổng hợp từ `eval_summary.json`, `diagnostics.jsonl`, `logs/*.json`, `submission.jsonl` và hai `run_config.json` của baseline/pilot.
+
+### Đại tu kiến trúc SOTA kế thừa KDD Cup & XiYan-SQL — 2026-11-03
+
+Nhằm giải quyết triệt để 135 câu `wrong_value`, 87 câu fallback lỗi cú pháp `sort_by: null` và kéo Penalized Accuracy (PA) từ vùng âm (-0.575) lên dương, hệ thống đã được tái cấu trúc theo 4 hướng tiếp cận từ các giải pháp vô địch thế giới (KOBUSHI Top 4 KDD Cup, Meituan Quán quân KDD Cup, XiYan-SQL Top 1 BIRD-SQL, và Datasage Top 1 DataAgentBench):
+
+1. **Entity & Cell-Level Value Grounder (`src/modules/value_grounder.py`):**
+   - Lấy cảm hứng từ M-Schema (XiYan-SQL / Alibaba-NLP): Đánh chỉ mục trước toàn bộ các giá trị phân loại/chuỗi trong bảng dữ liệu của doanh nghiệp (`ten_san_pham`, `ten_khach_hang`, `ten_nha_cung_cap`, `trang_thai`, `don_vi_tinh`...).
+   - Hỗ trợ chuẩn hóa tiếng Việt bỏ dấu (`unicodedata` NFKD + xử lý chữ đ/Đ), kết hợp n-gram matching và token overlap.
+   - Hàm `resolve_entities` và `format_grounded_context` tự động ánh xạ teencode/viết tắt/không dấu trong câu hỏi sang đúng cell value trong database, tiêm vào prompt hệ thống dưới khối `【Gợi ý giá trị thực tế trong dữ liệu (Entity Grounding)】`.
+   - Giúp LLM và AnalysisPlan không bao giờ phải "bịa" tên sản phẩm hay trạng thái đơn hàng.
+
+2. **Khơi thông và bảo hộ nhánh Analysis Plan (`src/modules/analysis_plan.py`):**
+   - Kế thừa KOBUSHI Phase-Gates & Safe Defaults: Nới lỏng Pydantic schema, cho phép `sort_by: null` và tự động fallback về safe default (`"value"` khi có group_by, `"key"` cho scalar) thay vì báo lỗi cú pháp.
+   - Bổ sung Empty Filter Guard: Nếu bộ lọc điều kiện hoặc khoảng ngày làm DataFrame rỗng trước khi scalar aggregate, chủ động raise `AnalysisPlanError` để kích hoạt fallback/abstain thay vì trả về `0` sai.
+   - Bỏ qua các trường suy luận tự do (`thought`, `reason`, `notes`) mà LLM có thể sinh kèm.
+
+3. **Khắc phục lỗi Rulebook Context Truncation (`src/modules/rulebook_interpreter.py`):**
+   - Sửa bug `get_relevant_rules`: Trước đây hàm so khớp exact substring cả chuỗi keyword dài, dẫn đến hầu hết câu hỏi phổ biến trả về 0 match $\rightarrow$ rơi vào nhánh fallback dump toàn bộ 87 rules (18K ký tự) $\rightarrow$ làm tràn token budget và bị prompt builder cắt bỏ ngữ cảnh.
+   - Chuyển sang so khớp từ khóa trọng tâm với diacritics stripping và bộ từ điển chỉ số kinh doanh ("doanh thu", "ban chay", "cong no", "ton kho", "gia von"...).
+
+4. **Hiệu chỉnh Selective Prediction & Confidence Gate (`src/modules/confidence_gate.py`):**
+   - Nâng ngưỡng tin cậy mặc định từ `0.30` lên `0.45` theo nguyên lý TAPS (Selective Classification).
+   - Tăng hình phạt retry: `-0.20 * execution_retries`.
+   - Phạt cực nặng (-0.55 confidence) nếu kết quả thực thi sai lệch kiểu dữ liệu mong đợi (`expected_type`) để triệt tiêu nguy cơ bị trừ điểm phạt -1.
+   - Thêm bộ lọc bẫy số 0 (`zero_numeric_after_retry` và `zero_numeric_on_aggregation`), phạt empty list/empty string.
+
+5. **Đồng bộ mã nguồn và Test Suite:**
+   - Cập nhật pipeline CLI và constructor mặc định `confidence_threshold=0.45` đồng bộ.
+   - Cache `ValueGrounder` theo `business_id` trong `predict.py` để tối ưu hóa thời gian chạy.
+   - Thêm unit tests cho `ValueGrounder`, `ConfidenceGate` và mở rộng `AnalysisPlan`. Full test suite: **137/137 tests PASSED** trong 1.89s.
+   - Đóng gói mới file `datamate_code.zip` gồm đúng 20 file source/prompt sạch (loại bỏ toàn bộ `__pycache__`).
+

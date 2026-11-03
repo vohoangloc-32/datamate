@@ -105,3 +105,14 @@ def test_detect_time_expressions(analyzer, as_of_date):
     expr_names = [e[0] for e in info.time_expressions]
     assert any("tháng này" in e for e in expr_names)
     assert any("tuần rồi" in e for e in expr_names)
+
+
+def test_detect_recent_days_in_unaccented_question(analyzer):
+    info = analyzer.analyze(
+        "7 ngay gan nhat cua hang ban duoc bao nhieu",
+        date(2024, 5, 18),
+    )
+
+    assert info.time_expressions == [
+        ("7 ngay gan nhat", date(2024, 5, 12), date(2024, 5, 18))
+    ]

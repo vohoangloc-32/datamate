@@ -22,7 +22,7 @@ class ConfidenceGate:
 
     def __init__(
         self,
-        min_confidence: float = 0.3,
+        min_confidence: float = 0.45,
         enable_dual_run: bool = False,
     ):
         """
@@ -46,23 +46,6 @@ class ConfidenceGate:
     ) -> Dict[str, Any]:
         """
         Evaluate whether to submit the answer or abstain.
-
-        Parameters
-        ----------
-        answer : Dict[str, Any]
-            The formatted answer dict (with "type" and "answer" keys).
-        question_info : QuestionInfo, optional
-            Analyzed question information.
-        execution_retries : int
-            Number of retries that were needed.
-        max_retries : int
-            Maximum retries allowed.
-        second_answer : Dict[str, Any], optional
-            A second answer from a dual-run (for consistency check).
-        Returns
-        -------
-        Dict[str, Any]
-            Either the original answer or an abstain entry.
         """
         # Already abstain or unanswerable — pass through
         if answer.get("type") in ("abstain", "unanswerable"):
@@ -73,7 +56,7 @@ class ConfidenceGate:
 
         # 1. Penalty for retries (more retries = less confidence)
         if execution_retries > 0:
-            retry_penalty = 0.15 * execution_retries
+            retry_penalty = 0.20 * execution_retries
             confidence -= retry_penalty
             reasons.append(f"retries={execution_retries}")
 
@@ -85,24 +68,60 @@ class ConfidenceGate:
         # 3. Check for implausible values
         implausible = self._check_plausibility(answer)
         if implausible:
-            confidence -= 0.3
+            confidence -= 0.35
             reasons.append(f"implausible: {implausible}")
 
-        # 4. Dual-run consistency check
+        # 4. Zero numeric trap check (high risk of empty filter)
+        answer_type = answer.get("type")
+        val = answer.get("answer")
+        if answer_type in ("number", "percent") and val is not None:
+            try:
+                num_val = float(val)
+                if num_val == 0.0:
+                    if execution_retries > 0:
+                        confidence -= 0.35
+                        reasons.append("zero_numeric_after_retry")
+                    elif question_info and question_info.aggregation in ("sum", "mean"):
+                        confidence -= 0.25
+                        reasons.append("zero_numeric_on_aggregation")
+            except (ValueError, TypeError):
+                pass
+
+        # 5. Empty collections check
+        if answer_type == "list":
+            if not isinstance(val, list) or len(val) == 0:
+                confidence -= 0.6
+                reasons.append("empty_or_invalid_list")
+        elif answer_type == "string":
+            if not val or not str(val).strip():
+                confidence -= 0.6
+                reasons.append("empty_string")
+        elif answer_type == "table":
+            if not isinstance(val, dict) or not val.get("rows"):
+                confidence -= 0.6
+                reasons.append("empty_table")
+
+        # 6. Type mismatch between expected and actual (Critical: wrong type = -1 point)
+        if question_info and question_info.expected_type and answer_type:
+            if question_info.expected_type != answer_type:
+                if question_info.confidence >= 0.6:
+                    confidence -= 0.55
+                    reasons.append(
+                        f"type_mismatch: expected={question_info.expected_type}, "
+                        f"got={answer_type}"
+                    )
+                else:
+                    confidence -= 0.25
+                    reasons.append(
+                        f"weak_type_mismatch: expected={question_info.expected_type}, "
+                        f"got={answer_type}"
+                    )
+
+        # 7. Dual-run consistency check
         if self.enable_dual_run and second_answer is not None:
             if not self._answers_match(answer, second_answer):
                 confidence -= 0.5
                 reasons.append("dual_run_inconsistent")
-
-        # 5. Type mismatch between expected and actual
-        if question_info:
-            if (question_info.expected_type != answer.get("type") and
-                question_info.confidence > 0.5):
-                confidence -= 0.2
-                reasons.append(
-                    f"type_mismatch: expected={question_info.expected_type}, "
-                    f"got={answer.get('type')}"
-                )
 
         # Decision
         if confidence < self.min_confidence:

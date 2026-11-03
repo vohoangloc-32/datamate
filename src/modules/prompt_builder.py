@@ -72,6 +72,40 @@ Your response must be a Python code block that:
 - Assigns `answer_type` = one of: "number", "percent", "string", "date", "boolean", "list", "table", "unanswerable"
 """
 
+ANALYSIS_PLAN_PROMPT = """You are a Vietnamese business-data analyst. Produce a typed analysis plan for the question using only the supplied business context, rules, and AVAILABLE DATA schema.
+
+Return one JSON object only. Do not write Python, SQL, markdown, or commentary.
+Use exact table and column names from AVAILABLE DATA. Do not invent columns or values.
+Choose an answer_type matching the expected answer type.
+Supported answer types: number, string, list, table.
+Supported aggregations: sum, count, nunique, mean, min, max.
+Use `count` for rows; use `nunique` with value_column set to the identifier for distinct entities/orders.
+For sum/mean/min/max/nunique, value_column is required and must be numeric for sum/mean.
+Use filters only with the exact values present in the selected table. If a necessary value or column is absent, do not guess; return an unsupported plan using answer_type "unanswerable".
+For relative or explicit date periods, set date_column, start_date, and end_date_exclusive. Dates must be ISO YYYY-MM-DD. start_date is inclusive; end_date_exclusive is the day after the last included date. Use resolved ranges in QUESTION ANALYSIS when provided.
+For grouped ranking, group_by must identify the ranked entity; sort_by="value" sorts by the aggregate. For chronological grouped values, use sort_by="key". Lists must be flat scalar values.
+Use output="scalar" for a single number, "group_keys" for ranked entity names, "group_values" for grouped aggregate values, or "table" for key/value rows.
+Unsupported or ambiguous business calculations should use answer_type "unanswerable"; the caller may fall back to code generation.
+
+The JSON object must contain exactly these fields:
+{
+  "answer_type": "number | string | list | table",
+  "table": "exact table name",
+  "aggregation": "sum | count | nunique | mean | min | max",
+  "value_column": "exact column name or null",
+  "date_column": "exact date column or null",
+  "start_date": "YYYY-MM-DD or null",
+  "end_date_exclusive": "YYYY-MM-DD or null",
+  "filters": [{"column": "exact column", "operator": "eq | ne | in | not_in | is_null | not_null", "value": "scalar, list, or null"}],
+  "group_by": ["exact column names"],
+  "output": "scalar | group_keys | group_values | table",
+  "limit": "integer 1-100 or null",
+  "sort_by": "key | value | null",
+  "sort_direction": "asc | desc | null"
+}
+For scalar output (when group_by is empty), sort_by and sort_direction must be null.
+"""
+
 _PROMPT_GLOBAL_NAMES = frozenset({
     "pd", "np", "math", "re", "datetime", "dt", "date", "timedelta",
     "as_of_date", "as_of_date_obj", "result", "answer_type", "abs", "all",
@@ -165,9 +199,11 @@ class PromptBuilder:
         head_rows: Optional[Dict[str, str]] = None,
         token_counter: Optional[Callable[[str], int]] = None,
         max_tokens: Optional[int] = None,
+        mode: str = "code",
+        grounded_context: Optional[str] = None,
     ) -> str:
         """
-        Build a complete prompt for the code-generation LLM.
+        Build a prompt for code generation or a structured analysis plan.
 
         Parameters
         ----------
@@ -201,9 +237,11 @@ class PromptBuilder:
             raise ValueError("token_counter and max_tokens must be provided together.")
         if max_tokens is not None and max_tokens < 1:
             raise ValueError("max_tokens must be greater than zero.")
+        if mode not in {"code", "analysis_plan"}:
+            raise ValueError(f"Unsupported prompt mode: {mode!r}")
 
         selected_examples = []
-        if question_info and question_info.expected_type:
+        if mode == "code" and question_info and question_info.expected_type:
             selected_examples.extend(
                 example for example in self.few_shot_examples
                 if example.get("expected_type") == question_info.expected_type
@@ -221,7 +259,9 @@ class PromptBuilder:
             rulebook_limit: int,
             context_limit: int,
         ) -> str:
-            sections = [SYSTEM_PROMPT]
+            sections = [
+                ANALYSIS_PLAN_PROMPT if mode == "analysis_plan" else SYSTEM_PROMPT
+            ]
 
             if include_context and readme_context and readme_context.raw_text:
                 context = readme_context.to_prompt_string(max_length=context_limit)
@@ -271,7 +311,10 @@ class PromptBuilder:
                 if question_info.is_comparison:
                     sections.append("This is a comparison question.")
 
-            if include_examples and selected_examples:
+            if grounded_context:
+                sections.append(f"\n{grounded_context}")
+
+            if mode == "code" and include_examples and selected_examples:
                 sections.append(
                     "\n## EXAMPLES\n"
                     "These examples illustrate calculation patterns only. Their table "
@@ -285,20 +328,29 @@ class PromptBuilder:
                         f"Answer: {example.get('answer', '')}",
                     ])
 
-            sections.extend([
-                "\n## YOUR TASK",
-                f"as_of_date = \"{as_of_date}\"",
-                f"Question: {question}",
-                "",
-                "Write Python code to answer this question. "
-                "Assign the answer to `result` and the type to `answer_type`.",
-                "```python",
-            ])
+            if mode == "analysis_plan":
+                sections.extend([
+                    "\n## YOUR TASK",
+                    f"as_of_date = \"{as_of_date}\"",
+                    f"Question: {question}",
+                    "",
+                    "Return the JSON analysis plan now.",
+                ])
+            else:
+                sections.extend([
+                    "\n## YOUR TASK",
+                    f"as_of_date = \"{as_of_date}\"",
+                    f"Question: {question}",
+                    "",
+                    "Write Python code to answer this question. "
+                    "Assign the answer to `result` and the type to `answer_type`.",
+                    "```python",
+                ])
             return "\n".join(sections)
 
         strategies = [
-            (True, True, True, "full", 2000, 1500),
-            (False, True, True, "full", 2000, 1500),
+            (True, mode == "code", True, "full", 2000, 1500),
+            (False, mode == "code", True, "full", 2000, 1500),
             (False, False, True, "full", 2000, 1500),
             (False, False, True, "without_samples", 2000, 1500),
             (False, False, True, "compact", 1200, 750),

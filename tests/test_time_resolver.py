@@ -110,6 +110,35 @@ def test_resolve_specific_date(as_of_date):
     assert resolver.resolve("ngày 15/04/2024", as_of_date) == (date(2024, 4, 15), date(2024, 4, 15))
 
 
+@pytest.mark.parametrize(
+    "expression",
+    ["7 ngày gần nhất", "7 ngay gan nhat"],
+)
+def test_resolve_recent_days_including_today(expression, as_of_date):
+    resolver = TimeResolver()
+
+    assert resolver.resolve(expression, as_of_date) == (
+        date(2024, 5, 12),
+        as_of_date,
+    )
+
+
+def test_resolve_one_recent_day(as_of_date):
+    assert TimeResolver().resolve("1 ngày gần nhất", as_of_date) == (
+        as_of_date,
+        as_of_date,
+    )
+
+
+def test_extract_recent_days_unaccented():
+    resolver = TimeResolver()
+
+    assert resolver.extract_and_resolve(
+        "7 ngay gan nhat cua hang ban duoc bao nhieu",
+        date(2024, 5, 18),
+    ) == [("7 ngay gan nhat", date(2024, 5, 12), date(2024, 5, 18))]
+
+
 def test_extract_and_resolve(as_of_date):
     resolver = TimeResolver()
     q = "Doanh thu trong tháng này và tuần rồi so với năm ngoái như thế nào?"

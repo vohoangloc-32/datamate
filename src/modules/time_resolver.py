@@ -9,10 +9,20 @@ the as_of_date and the solar-lunar calendar.
 import csv
 import logging
 import re
+import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_for_matching(text: str) -> str:
+    normalized = unicodedata.normalize("NFD", text.casefold())
+    normalized = "".join(
+        character for character in normalized
+        if not unicodedata.combining(character)
+    )
+    return normalized.replace("đ", "d")
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +282,16 @@ class TimeResolver:
             start = as_of - timedelta(days=n)
             return (start, as_of)
 
+        m = re.search(
+            r"(\d+)\s*ngay\s*gan\s*nhat",
+            _normalize_for_matching(expr),
+        )
+        if m:
+            n = int(m.group(1))
+            if n < 1:
+                return None
+            return (as_of - timedelta(days=n - 1), as_of)
+
         # --- Specific date ---
         m = re.search(r"ngày\s+(\d{1,2})[/\-.](\d{1,2})(?:[/\-.](\d{2,4}))?", expr)
         if m:
@@ -306,6 +326,16 @@ class TimeResolver:
             r"(tết)",
             r"(\d+\s*ngày\s*(?:trước|qua))",
         ]
+
+        normalized_question = _normalize_for_matching(question)
+        for match in re.finditer(
+            r"\d+\s*ngay\s*gan\s*nhat",
+            normalized_question,
+        ):
+            expr = match.group(0)
+            resolved = self.resolve(expr, as_of)
+            if resolved:
+                results.append((expr, resolved[0], resolved[1]))
 
         for pattern in patterns:
             for m in re.finditer(pattern, question.lower()):

@@ -31,10 +31,16 @@ from modules.time_resolver import LunarCalendar
 from modules.question_understanding import QuestionAnalyzer
 from modules.prompt_builder import PromptBuilder
 from modules.code_executor import CodeExecutor
+from modules.analysis_plan import (
+    AnalysisPlan,
+    AnalysisPlanError,
+    execute_analysis_plan,
+)
 from modules.retry_engine import RetryEngine
 from modules.answer_formatter import format_answer, build_submission_line
 from modules.confidence_gate import ConfidenceGate
 from modules.question_logger import QuestionLogger
+from modules.value_grounder import ValueGrounder
 
 logger = logging.getLogger(__name__)
 
@@ -200,10 +206,11 @@ class DataMatePipeline:
         output_dir: str,
         model_dir: str = "",
         max_retries: int = 3,
-        confidence_threshold: float = 0.3,
+        confidence_threshold: float = 0.45,
         llm_generate_fn: Optional[Callable[[str], str]] = None,
         prompt_token_counter: Optional[Callable[[str], int]] = None,
         max_prompt_tokens: Optional[int] = None,
+        analysis_plan_enabled: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
@@ -252,8 +259,10 @@ class DataMatePipeline:
         self._data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
         self._schema_cache: Dict[str, SchemaRegistry] = {}
         self._readme_cache: Dict[str, Any] = {}
+        self._grounder_cache: Dict[str, Any] = {}
 
         self.max_retries = max_retries
+        self.analysis_plan_enabled = analysis_plan_enabled
 
     def _ensure_llm_loaded(self) -> RetryEngine:
         """Lazily load the LLM model if not provided."""
@@ -293,6 +302,8 @@ class DataMatePipeline:
             readme = parse_readme(str(readme_path))
             self._readme_cache[business_id] = readme
 
+            self._grounder_cache[business_id] = ValueGrounder(tables)
+
             logger.info("Loaded business %s: %d tables", business_id, len(tables))
 
     def process_question(self, question_record: Dict) -> Dict[str, Any]:
@@ -323,6 +334,8 @@ class DataMatePipeline:
             tables = self._data_cache[biz_id]
             schema = self._schema_cache[biz_id]
             readme = self._readme_cache[biz_id]
+            grounder = self._grounder_cache.get(biz_id)
+            grounded_context = grounder.format_grounded_context(question) if grounder else None
 
             # Load the model tokenizer before building a prompt so the prompt
             # budget is measured with the same tokenizer used for generation.
@@ -336,7 +349,7 @@ class DataMatePipeline:
             table_vars = self.code_executor.get_table_var_mapping(tables)
             head_rows = self.code_executor.get_head_rows(tables, n=3)
 
-            prompt = self.prompt_builder.build(
+            prompt_options = dict(
                 question=question,
                 as_of_date=as_of_date,
                 schema=schema,
@@ -352,17 +365,60 @@ class DataMatePipeline:
                     and self._max_prompt_tokens is not None
                     else None
                 ),
+                grounded_context=grounded_context,
             )
 
-            # 4. Generate & execute code (with retries)
-            exec_result, retries = retry_engine.run(
-                prompt=prompt,
-                tables=tables,
-                as_of_date=as_of_date,
-                expected_type=q_info.expected_type,
-                token_counter=self._prompt_token_counter,
-                max_prompt_tokens=self._max_prompt_tokens,
-            )
+            plan_status = "disabled"
+            plan_error = None
+            plan_response = None
+            exec_result = None
+            retries = 0
+
+            if self.analysis_plan_enabled:
+                if q_info.expected_type not in {"number", "string", "list", "table"}:
+                    plan_status = "skipped_unsupported_type"
+                else:
+                    plan_status = "fallback"
+                    try:
+                        plan_prompt = self.prompt_builder.build(
+                            **prompt_options,
+                            mode="analysis_plan",
+                        )
+                        generate_fn = self._llm_generate_fn
+                        if generate_fn is None:
+                            raise RuntimeError("LLM generator was not initialized.")
+                        plan_response = generate_fn(plan_prompt)
+                        plan = AnalysisPlan.from_response(
+                            plan_response,
+                            tables,
+                            expected_type=q_info.expected_type,
+                        )
+                        exec_result = execute_analysis_plan(plan, tables)
+                        plan_status = "executed"
+                    except AnalysisPlanError as exc:
+                        plan_error = str(exc)
+                        logger.info(
+                            "Analysis plan unsupported for question %s; using code fallback: %s",
+                            q_id,
+                            plan_error,
+                        )
+                    except Exception as exc:
+                        plan_error = f"{type(exc).__name__}: {exc}"
+                        logger.exception(
+                            "Analysis plan failed for question %s; using code fallback",
+                            q_id,
+                        )
+
+            if exec_result is None:
+                prompt = self.prompt_builder.build(**prompt_options)
+                exec_result, retries = retry_engine.run(
+                    prompt=prompt,
+                    tables=tables,
+                    as_of_date=as_of_date,
+                    expected_type=q_info.expected_type,
+                    token_counter=self._prompt_token_counter,
+                    max_prompt_tokens=self._max_prompt_tokens,
+                )
 
             # 6. Confidence gate
             final_answer = self.confidence_gate.evaluate(
@@ -384,6 +440,13 @@ class DataMatePipeline:
                 execution_output=exec_result.stdout,
                 retries=retries,
                 error_messages=[exec_result.error] if exec_result.error else None,
+                extra={
+                    "analysis_plan_status": plan_status,
+                    "analysis_plan_error": plan_error,
+                    "analysis_plan_response": plan_response[:4000]
+                    if plan_response
+                    else None,
+                },
             )
 
             return final_answer
@@ -461,8 +524,13 @@ def main():
                         help="Path to the LLM model weights")
     parser.add_argument("--max-retries", type=int, default=3,
                         help="Maximum retries per question")
-    parser.add_argument("--confidence-threshold", type=float, default=0.3,
+    parser.add_argument("--confidence-threshold", type=float, default=0.45,
                         help="Minimum confidence to submit an answer (0-1)")
+    parser.add_argument(
+        "--analysis-plan",
+        action="store_true",
+        help="Try a validated structured analysis plan before pandas code fallback",
+    )
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level")
@@ -497,6 +565,7 @@ def main():
         model_dir=args.model_dir,
         max_retries=args.max_retries,
         confidence_threshold=args.confidence_threshold,
+        analysis_plan_enabled=args.analysis_plan,
     )
     pipeline.run()
 
