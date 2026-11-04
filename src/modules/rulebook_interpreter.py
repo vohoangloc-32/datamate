@@ -40,13 +40,25 @@ class Rulebook:
         return [r for r in self.rules if r.category == category]
 
     def get_relevant_rules(self, question: str) -> List[BusinessRule]:
-        """Find rules relevant to a given question based on keyword matching."""
-        question_lower = question.lower()
+        """Find rules using normalized Vietnamese text and business aliases."""
+        question_lower = _normalize_for_matching(question)
         relevant = []
+        matched_categories = set()
         for rule in self.rules:
-            # Check if the rule keyword appears in the question
-            if rule.keyword.lower() in question_lower:
+            keyword = _normalize_for_matching(rule.keyword)
+            if keyword in question_lower:
                 relevant.append(rule)
+                matched_categories.add(rule.category)
+                continue
+            for aliases in _QUESTION_ALIASES.values():
+                if keyword in aliases and any(alias in question_lower for alias in aliases):
+                    relevant.append(rule)
+                    matched_categories.add(rule.category)
+                    break
+        if matched_categories:
+            for rule in self.rules:
+                if rule.category in matched_categories and rule not in relevant:
+                    relevant.append(rule)
         return relevant
 
     def get_vocabulary_match(self, term: str) -> Optional[str]:
@@ -136,6 +148,25 @@ def _classify_rule(keyword: str, definition: str) -> str:
             if kw in combined:
                 return category
     return "general"
+
+
+def _normalize_for_matching(text: str) -> str:
+    normalized = unicodedata.normalize("NFD", text.casefold())
+    normalized = "".join(
+        character for character in normalized
+        if not unicodedata.combining(character)
+    )
+    return normalized.replace("đ", "d")
+
+
+_QUESTION_ALIASES = {
+    "doanh thu": ("doanh thu", "doanh so", "tien ban", "tien hang", "ban duoc bao nhieu tien"),
+    "số đơn": ("so don", "don hang", "hoa don", "bill", "order"),
+    "bán chạy": ("ban chay", "hot nhat", "ban nhieu nhat", "nhieu nhat"),
+    "hủy": ("huy", "cancel", "cancelled"),
+    "trả hàng": ("tra hang", "tra lai", "returned", "hoan hang"),
+    "thời gian": ("thang", "tuan", "ngay", "nam", "quy", "ky"),
+}
 
 
 # ---------------------------------------------------------------------------

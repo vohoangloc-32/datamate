@@ -14,7 +14,7 @@ import ast
 import json
 import logging
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .question_understanding import QuestionInfo
 from .readme_parser import BusinessContext
@@ -39,7 +39,7 @@ IMPORTANT RULES:
 2. Do not read or reload data from files. The provided DataFrames are the only data sources.
 3. Write Python code that computes the answer and assigns it to a variable called `result`.
 4. `result` must be a single value matching the expected answer type.
-5. If a required table or field is absent from AVAILABLE DATA, do not guess its name or substitute another field; set `result = None` and `answer_type = "unanswerable"`.
+5. If a required table or field is absent from AVAILABLE DATA, do not guess its name or substitute another field. Use `unanswerable` only after checking the available data.
 6. Apply the business rules provided below (e.g., how to compute revenue, what counts as a "week", etc.).
 7. Handle edge cases: empty DataFrames, missing values, division by zero.
 8. For date filtering, use the as_of_date to resolve relative time expressions.
@@ -56,9 +56,17 @@ IMPORTANT RULES:
 17. Do NOT write any import statements. `pd`, `np`, `math`, `re`, `datetime`, `dt`, `date` and `timedelta` are already available.
 18. Define every variable before using it; the code must be complete and self-contained.
 19. Preserve every explicit question entity/filter; never answer an entity-specific count with a generic count.
-20. For date ranges spanning same-schema monthly tables, combine all matching tables. Order counts use distinct order IDs; a row may represent a product within an order.
+20. For date ranges spanning same-schema monthly tables, combine all matching tables. Order counts use distinct order IDs, not rows, unless the question asks for order lines/items.
 21. Sold-order counts and revenue/customer spending exclude cancelled, returned, or refunded transactions unless asked otherwise. Use actual status values in the data; follow documented customer aliases and do not rank unidentified guests as named customers.
 22. For a status rate, count matching-status records in the numerator and all applicable records in the denominator.
+23. Use half-open date ranges (`>= start` and `< next_period_start`) for months/quarters.
+24. Before writing code, resolve the question's metric, entity, date column, date range, filters, aggregation, grouping, ranking, and output type from the structured plan and rulebook. Every explicit condition must appear in the code.
+25. Treat the structured query plan as a contract, not a suggestion. If it is validated, do not change its metric, aggregation, date range, source tables, or answer type.
+26. Distinguish an empty result from unavailable data. An empty result can be a valid zero, empty list, or empty table; use `unanswerable` only when the required information or rule is genuinely absent.
+27. Distinguish system failures from unavailable data. Syntax errors, missing generated variables, timeouts, memory errors, and execution failures must be fixed or left for retry; never return `unanswerable` for them.
+28. For joins, identify the real join keys and check expected uniqueness before aggregating. Do not join detail tables in a way that duplicates monetary or quantity values.
+29. When the question asks for a count of orders, use the actual order-ID column and `nunique()` after applying the order-level filters. Do not use row count unless the question asks for rows or lines.
+30. Do not infer business meaning from a similarly named column. Prefer the rulebook/README definition and the exact schema; if a required binding remains unresolved, do not invent it.
 
 OUTPUT FORMAT:
 Your response must be a Python code block that:
@@ -66,6 +74,7 @@ Your response must be a Python code block that:
 - Computes the answer
 - Assigns `result` = the answer value
 - Assigns `answer_type` = one of: "number", "percent", "string", "date", "boolean", "list", "table", "unanswerable"
+- Return only the code block; do not include an explanation, plan prose, or Markdown outside the code.
 """
 
 _PROMPT_GLOBAL_NAMES = frozenset({
@@ -159,6 +168,8 @@ class PromptBuilder:
         question_info: Optional[QuestionInfo] = None,
         table_var_names: Optional[Dict[str, str]] = None,
         head_rows: Optional[Dict[str, str]] = None,
+        completeness_context: Optional[Dict[str, Any]] = None,
+        query_plan: Optional[Dict[str, Any]] = None,
         token_counter: Optional[Callable[[str], int]] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
@@ -266,6 +277,25 @@ class PromptBuilder:
                         sections.append(f"  - '{expr}' → {start} to {end}")
                 if question_info.is_comparison:
                     sections.append("This is a comparison question.")
+            if completeness_context:
+                sections.append("\n## QUESTION COMPLETENESS")
+                sections.append(
+                    "Use this completeness assessment. Preserve its assumptions "
+                    "and satisfy every listed requirement."
+                )
+                sections.append(json.dumps(
+                    completeness_context,
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            if query_plan:
+                sections.append("\n## STRUCTURED QUERY PLAN")
+                sections.append(
+                    "Implement this plan exactly. Do not invent tables, columns, "
+                    "filters, or placeholder values. If the plan is fallback, "
+                    "re-check the available schema before answering."
+                )
+                sections.append(json.dumps(query_plan, ensure_ascii=False, indent=2))
 
             if include_examples and selected_examples:
                 sections.append(
@@ -377,6 +407,24 @@ class PromptBuilder:
             compact_prompt = remove_section(compact_prompt, heading)
             if compact_prompt not in base_prompts:
                 base_prompts.append(compact_prompt)
+        question_line = ""
+        question_marker = "Question:"
+        if question_marker in original_prompt:
+            question_line = original_prompt.rsplit(question_marker, 1)[-1].splitlines()[0].strip()
+        available_section = ""
+        available_marker = "\n## AVAILABLE DATA"
+        if available_marker in original_prompt:
+            available_section = original_prompt.split(available_marker, 1)[1]
+            next_section = available_section.find("\n## ")
+            if next_section >= 0:
+                available_section = available_section[:next_section]
+        minimal_base = (
+            "You are an expert Vietnamese data analyst. Use only the available "
+            "DataFrames and columns. Preserve the question's exact conditions.\n"
+            f"Question: {question_line}\n"
+            f"## AVAILABLE DATA{available_section}"
+        )
+        base_prompts.append(minimal_base)
 
         def shorten(text: str, limit: Optional[int]) -> str:
             if limit is None or len(text) <= limit:
@@ -387,9 +435,9 @@ class PromptBuilder:
             tail = limit - 3 - head
             return text[:head] + "..." + text[-tail:]
 
-        code_limits = (None, 2000, 1000, 500)
-        error_limits = (None, 1000, 500, 250)
-        context_limits = (None, 1500, 750, 300, 0)
+        code_limits = (None, 2000, 1000, 500, 250, 100)
+        error_limits = (None, 1000, 500, 250, 150, 75)
+        context_limits = (None, 1500, 750, 300, 150, 0)
         for base in base_prompts:
             for context_limit in context_limits:
                 if available_context is None:

@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import gc
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ from modules.code_executor import CodeExecutor
 from modules.retry_engine import RetryEngine
 from modules.answer_formatter import format_answer, build_submission_line
 from modules.confidence_gate import ConfidenceGate
+from modules.query_planner import build_query_plan
 from modules.question_logger import QuestionLogger
 
 logger = logging.getLogger(__name__)
@@ -88,11 +90,13 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
     try:
         from vllm import LLM, SamplingParams  # type: ignore  # optional dependency
 
-        # Number of GPUs used for tensor parallelism. A 3B model fits on a single
-        # 16 GB T4, so default to 1 (more robust); set VLLM_TP=2 to use both GPUs.
-        tp_size = int(os.environ.get("VLLM_TP", "1"))
+        # Split the model across two GPUs by default; override with VLLM_TP when needed.
+        tp_size = int(os.environ.get("VLLM_TP", "2"))
         max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192"))
         max_new_tokens = int(os.environ.get("VLLM_MAX_NEW_TOKENS", "1024"))
+        temperature = float(os.environ.get("DATAMATE_TEMPERATURE", "0.7"))
+        if not 0.0 <= temperature <= 2.0:
+            raise ValueError("DATAMATE_TEMPERATURE must be between 0 and 2.")
         prompt_safety_tokens = int(os.environ.get("DATAMATE_PROMPT_SAFETY_TOKENS", "512"))
         max_prompt_tokens = max_model_len - max_new_tokens - prompt_safety_tokens
         if max_prompt_tokens < 1:
@@ -111,7 +115,7 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
         )
         vllm_tokenizer = llm.get_tokenizer()
         sampling_params = SamplingParams(
-            temperature=0.0,  # Greedy for reproducibility
+            temperature=temperature,
             max_tokens=max_new_tokens,
             stop=["```\n", "\n\n\n"],
             include_stop_str_in_output=True,  # keep closing ``` for code extraction
@@ -122,8 +126,12 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
             outputs = llm.generate([text], sampling_params)
             return outputs[0].outputs[0].text
 
-        logger.info("Loaded vLLM model from %s (tensor_parallel_size=%d)",
-                    model_dir, tp_size)
+        logger.info(
+            "Loaded vLLM model from %s (tensor_parallel_size=%d, temperature=%.2f)",
+            model_dir,
+            tp_size,
+            temperature,
+        )
         return _TokenCountingGenerateFn(generate, vllm_tokenizer, max_prompt_tokens)
 
     except Exception as e:  # vLLM missing (ImportError) or failed to initialise
@@ -200,7 +208,11 @@ class DataMatePipeline:
         output_dir: str,
         model_dir: str = "",
         max_retries: int = 3,
-        confidence_threshold: float = 0.3,
+        confidence_threshold: float = 0.2,
+        confidence_runs: int = 4,
+        adaptive_confidence: bool = True,
+        min_confidence_runs: int = 2,
+        question_completeness_threshold: float = 0.85,
         llm_generate_fn: Optional[Callable[[str], str]] = None,
         prompt_token_counter: Optional[Callable[[str], int]] = None,
         max_prompt_tokens: Optional[int] = None,
@@ -254,6 +266,18 @@ class DataMatePipeline:
         self._readme_cache: Dict[str, Any] = {}
 
         self.max_retries = max_retries
+        if confidence_runs < 1:
+            raise ValueError("confidence_runs must be greater than zero.")
+        if min_confidence_runs < 1 or min_confidence_runs > confidence_runs:
+            raise ValueError(
+                "min_confidence_runs must be between 1 and confidence_runs."
+            )
+        if not 0.0 < question_completeness_threshold <= 1.0:
+            raise ValueError("question_completeness_threshold must be between 0 and 1.")
+        self.confidence_runs = confidence_runs
+        self.adaptive_confidence = adaptive_confidence
+        self.min_confidence_runs = min_confidence_runs
+        self.question_completeness_threshold = question_completeness_threshold
 
     def _ensure_llm_loaded(self) -> RetryEngine:
         """Lazily load the LLM model if not provided."""
@@ -332,6 +356,55 @@ class DataMatePipeline:
             as_of = date.fromisoformat(as_of_date)
             q_info = self.question_analyzer.analyze(question, as_of)
 
+            completeness = self.confidence_gate.evaluate_question_completeness(
+                self._llm_generate_fn,
+                question=question,
+                as_of_date=as_of_date,
+                question_info=q_info,
+                schema=schema.to_compact_string(),
+                rulebook=self.rulebook.to_prompt_string(
+                    relevant_only=question,
+                    max_length=3000,
+                ),
+                business_context=readme.to_prompt_string(max_length=2000),
+            )
+            query_plan = build_query_plan(
+                self._llm_generate_fn,
+                question=question,
+                as_of_date=as_of_date,
+                schema=schema.to_compact_string(),
+                rulebook=self.rulebook.to_prompt_string(
+                    relevant_only=question,
+                    max_length=3000,
+                ),
+                tables=tables,
+                table_var_names=self.code_executor.get_table_var_mapping(tables),
+                expected_type=q_info.expected_type,
+            )
+            if (
+                completeness["question_status"] == "unanswerable"
+                and completeness["confidence"] >= self.question_completeness_threshold
+                and completeness.get("missing_context")
+            ):
+                fallback = {
+                    "type": "abstain",
+                    "reason": (
+                        "question_incomplete: "
+                        + str(completeness.get("reason", "missing required context"))
+                    ),
+                }
+                self.question_logger.log_question(
+                    question_id=q_id,
+                    question_text=question,
+                    business_id=biz_id,
+                    final_answer=fallback,
+                    error_messages=[
+                        "missing_context="
+                        + json.dumps(completeness.get("missing_context", []), ensure_ascii=False)
+                    ],
+                )
+                return fallback
+
             # 3. Build prompt
             table_vars = self.code_executor.get_table_var_mapping(tables)
             head_rows = self.code_executor.get_head_rows(tables, n=3)
@@ -345,6 +418,8 @@ class DataMatePipeline:
                 question_info=q_info,
                 table_var_names=table_vars,
                 head_rows=head_rows,
+                completeness_context=completeness,
+                query_plan=query_plan,
                 token_counter=self._prompt_token_counter,
                 max_tokens=(
                     max(1, self._max_prompt_tokens - min(1024, self._max_prompt_tokens // 5))
@@ -354,28 +429,93 @@ class DataMatePipeline:
                 ),
             )
 
-            # 4. Generate & execute code (with retries)
-            exec_result, retries = retry_engine.run(
-                prompt=prompt,
-                tables=tables,
-                as_of_date=as_of_date,
-                expected_type=q_info.expected_type,
-                token_counter=self._prompt_token_counter,
-                max_prompt_tokens=self._max_prompt_tokens,
+            # 4. Generate and execute repeated independent runs with retries.
+            run_answers = []
+            candidate_records = []
+            failed_runs = 0
+            total_retries = 0
+            run_errors = []
+            last_result = None
+            for run_index in range(self.confidence_runs):
+                exec_result, retries = retry_engine.run(
+                    prompt=prompt,
+                    tables=tables,
+                    as_of_date=as_of_date,
+                    expected_type=q_info.expected_type,
+                    token_counter=self._prompt_token_counter,
+                    max_prompt_tokens=self._max_prompt_tokens,
+                )
+                last_result = exec_result
+                total_retries += retries
+                if not exec_result.success:
+                    failed_runs += 1
+                if exec_result.error:
+                    run_errors.append(exec_result.error)
+                run_answers.append(
+                    format_answer(
+                        value=exec_result.result,
+                        answer_type=exec_result.answer_type,
+                    )
+                )
+                candidate_records.append(
+                    {
+                        "answer": run_answers[-1],
+                        "execution_success": exec_result.success,
+                        "execution_output": exec_result.stdout,
+                        "code": exec_result.code,
+                        "retries": retries,
+                    }
+                )
+                if (
+                    self.adaptive_confidence
+                    and run_index + 1 >= self.min_confidence_runs
+                    and run_answers[-1].get("type") not in ("abstain", "unanswerable")
+                    and all(answer == run_answers[-1] for answer in run_answers)
+                    and total_retries == 0
+                    and failed_runs == 0
+                    and completeness.get("question_status") == "answerable"
+                    and float(completeness.get("confidence", 0.0)) >= 0.8
+                    and q_info.confidence >= 0.75
+                ):
+                    logger.info(
+                        "Stopping repeated runs early for %s after %d matching runs",
+                        q_id,
+                        run_index + 1,
+                    )
+                    break
+
+            use_post_verifier = not (
+                self.adaptive_confidence
+                and len(run_answers) < self.confidence_runs
+                and len(run_answers) >= self.min_confidence_runs
+                and all(answer == run_answers[0] for answer in run_answers)
+                and failed_runs == 0
+                and total_retries == 0
             )
 
-            # 5. Format answer
-            answer = format_answer(
-                value=exec_result.result,
-                answer_type=exec_result.answer_type,
-            )
-
-            # 6. Confidence gate
-            final_answer = self.confidence_gate.evaluate(
-                answer=answer,
+            # 5. Select the most common answer and evaluate run consistency.
+            final_answer = self.confidence_gate.evaluate_runs(
+                run_answers,
+                candidate_records=candidate_records,
+                failed_runs=failed_runs,
+                execution_retries=total_retries,
                 question_info=q_info,
-                execution_retries=retries,
+                completeness_context=completeness,
+                prompt_verifier_fn=self._llm_generate_fn if use_post_verifier else None,
+                verifier_context={
+                    "question": question,
+                    "as_of_date": as_of_date,
+                    "expected_type": q_info.expected_type,
+                    "schema": schema.to_compact_string(),
+                    "rulebook": self.rulebook.to_prompt_string(
+                        relevant_only=question,
+                        max_length=3000,
+                    ),
+                    "question_completeness": completeness,
+                },
             )
+            exec_result = last_result
+            retries = total_retries
 
             # 7. Log
             self.question_logger.log_question(
@@ -383,10 +523,11 @@ class DataMatePipeline:
                 question_text=question,
                 business_id=biz_id,
                 final_answer=final_answer,
-                generated_code=exec_result.code,
+                generated_code=exec_result.code if exec_result else "",
                 execution_output=exec_result.stdout,
                 retries=retries,
-                error_messages=[exec_result.error] if exec_result.error else None,
+                error_messages=run_errors or None,
+                extra={"query_plan": query_plan, "question_analysis": q_info.to_dict()},
             )
 
             return final_answer
@@ -402,6 +543,10 @@ class DataMatePipeline:
                 error_messages=[str(e)],
             )
             return fallback
+        finally:
+            # Release prompt, retry, and candidate objects before the next question.
+            # Business tables remain in the intentional per-business cache.
+            gc.collect()
 
     def run(self):
         """Run the full pipeline on all questions."""
@@ -466,6 +611,8 @@ def main():
                         help="Maximum retries per question")
     parser.add_argument("--confidence-threshold", type=float, default=0.3,
                         help="Minimum confidence to submit an answer (0-1)")
+    parser.add_argument("--confidence-runs", type=int, default=4,
+                        help="Number of independent runs used to assess confidence")
     parser.add_argument("--log-level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level")
@@ -500,6 +647,7 @@ def main():
         model_dir=args.model_dir,
         max_retries=args.max_retries,
         confidence_threshold=args.confidence_threshold,
+        confidence_runs=args.confidence_runs,
     )
     pipeline.run()
 

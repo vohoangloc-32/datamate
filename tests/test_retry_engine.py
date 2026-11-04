@@ -182,6 +182,37 @@ def test_repeated_code_and_error_stops_retry_and_includes_file_feedback():
     assert "amount" in prompts[1]
 
 
+def test_syntax_error_retry_includes_valid_variables_and_syntax_guidance():
+    prompts = []
+    responses = iter([
+        "sales.2026 = 1\nresult = 1\nanswer_type = 'number'",
+        "result = sales['amount'].sum()\nanswer_type = 'number'",
+    ])
+
+    def generate(prompt):
+        prompts.append(prompt)
+        return next(responses)
+
+    engine = RetryEngine(
+        code_executor=CodeExecutor(),
+        prompt_builder=PromptBuilder(few_shot_examples=[]),
+        llm_generate_fn=generate,
+        max_retries=1,
+    )
+    result, retries = engine.run(
+        prompt="Use the provided tables. Question: total amount?",
+        tables={"sales": pd.DataFrame({"amount": [10, 20]})},
+        as_of_date="2025-01-01",
+        expected_type="number",
+    )
+
+    assert result.success is True
+    assert result.result == 30
+    assert retries == 1
+    assert "syntax error" in prompts[1]
+    assert "Available DataFrame variables and actual columns" in prompts[1]
+
+
 def test_distinct_retries_continue_after_first_failure():
     prompts = []
     responses = iter([

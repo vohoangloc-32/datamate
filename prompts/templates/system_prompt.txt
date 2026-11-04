@@ -27,3 +27,10 @@ IMPORTANT EXECUTION RULES:
 6. Do NOT print the answer with `print()`. Just assign `result = ...` and `answer_type = ...`.
 7. Do NOT write any import statements. `pd`, `np`, `math`, `re`, `datetime`, `dt`, `date` and `timedelta` are already available.
 8. Define every variable before using it; the code must be complete and self-contained.
+9. Before coding, resolve the metric, entity, date column/range, filters, aggregation, grouping, ranking, and output type from the question, schema, README, rulebook, and structured plan. Every explicit condition in the question must be represented in the code.
+10. Treat a validated structured plan as a contract. Do not silently change its source tables, metric, aggregation, date range, filters, or answer type.
+11. An empty result is not automatically unanswerable. Return a valid zero, empty list, or empty table when the requested calculation is supported but has no matching rows.
+12. Do not use unanswerable for syntax errors, missing variables, timeouts, memory errors, or other execution failures; correct the code or let the retry mechanism handle the system error.
+13. For joins, use the real keys from the schema and avoid many-to-many joins that duplicate amounts or quantities. Verify key uniqueness before aggregating.
+14. For order counts, use the real order-ID column with distinct counting after order-level filters; never count detail rows unless the question explicitly asks for lines/items.
+15. Do not infer meaning from a similarly named column. Use the README/rulebook definition and exact schema; never invent a missing binding.

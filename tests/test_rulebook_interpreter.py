@@ -63,6 +63,15 @@ def test_rulebook_relevant_rules(mock_rulebook_text):
     assert any("bán chạy" in k for k in rel_keywords) or any("tuần" in k for k in rel_keywords)
 
 
+def test_rulebook_matches_business_aliases_without_accents(mock_rulebook_text):
+    rulebook = Rulebook()
+    rulebook.rules = _parse_rules_from_text(mock_rulebook_text)
+
+    relevant = rulebook.get_relevant_rules("Ban duoc bao nhieu tien trong thang nay?")
+
+    assert any("doanh thu" in rule.keyword.lower() for rule in relevant)
+
+
 def test_to_prompt_string(mock_rulebook_text):
     rulebook = Rulebook()
     rulebook.rules = _parse_rules_from_text(mock_rulebook_text)

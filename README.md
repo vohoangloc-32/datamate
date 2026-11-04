@@ -13,6 +13,7 @@
 - **Sandboxed Code Execution & Self-Correction**: Translates questions into executable pandas/Python code executed in a restricted subprocess with automated retry and syntax/runtime error feedback.
 - **Strict Format Compliance**: Guarantees typed and normalized answers (`number`, `percent`, `string`, `date`, `boolean`, `list`, `table`, `unanswerable`, `abstain`) matching the competition evaluation metric.
 - **Risk-Calibrated Abstention**: Optimized for Penalized Accuracy (PA = `(correct - wrong) / total`), abstaining (score = 0) rather than guessing when data is missing or confidence is low.
+- **Evidence-Grounded Query Plans**: Structured plans record distinct-ID requirements, measure/status/date bindings, join keys, and requirement coverage before code generation; execution failures are not treated as `unanswerable`.
 - **Offline & Multi-GPU Ready**: Fully self-contained Docker container optimized for 2× NVIDIA RTX 5090 (Blackwell architecture, CUDA 12.8+, vLLM / HuggingFace Transformers).
 
 ---
@@ -127,8 +128,43 @@ python src/predict.py \
     --output-dir result/ \
     --model-dir /path/to/qwen2.5-coder-14b \
     --max-retries 3 \
-    --confidence-threshold 0.35
+    --confidence-threshold 0.35 \
+    --confidence-runs 4
 ```
+
+By default, each question is generated and executed five times before the
+confidence gate makes a decision. vLLM uses sampling temperature `0.7` by
+default (`DATAMATE_TEMPERATURE`) so repeated runs can produce diverse
+candidates. When the prompt verifier is available, it scores each executable
+candidate using the question, schema, rules, generated code, and execution
+output; execution success, expected answer type, and retries are combined with
+that score to select the best candidate. The modal-answer fallback is retained
+when per-candidate verification is unavailable. If every valid run disagrees
+and no candidate can be ranked, the gate abstains. Reduce `--confidence-runs`
+for faster experiments, or set it to `1` to use a single run.
+
+Adaptive confidence is enabled by default: after two matching, successful
+runs, high-confidence answerable questions can stop early and skip the
+post-verifier. Ambiguous questions, retries, failures, or disagreement still
+run the full candidate budget.
+
+Before code generation, a structured query-plan verifier resolves the metric,
+aggregation, entity/date columns, time range, filters, and source tables.
+Plans are validated against the loaded schema and then injected into the code
+prompt. Invalid plans fall back explicitly to the existing schema-guided path;
+the model is not allowed to invent a missing table or column.
+
+Before code generation, the pipeline also runs a question-completeness check.
+It classifies the question as `answerable`, `ambiguous`, or `unanswerable`
+using the question, business context, schema, as-of date, and rulebook. An
+unanswerable question with sufficient verifier confidence abstains immediately.
+An ambiguous question can continue when a safe default exists, but its
+confidence is reduced and the assumptions are included in the generation
+prompt. Invalid verifier JSON falls back to the deterministic question
+analysis instead of silently failing.
+
+When vLLM is used, the model is split across two GPUs by default
+(`VLLM_TP=2`). Set `VLLM_TP=1` when only one GPU is available.
 
 ### 2. Local Penalized Accuracy (PA) Evaluation
 Evaluate predictions on the training split:

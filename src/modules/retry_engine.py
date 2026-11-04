@@ -302,7 +302,10 @@ class RetryEngine:
             return (
                 "The generated code has a syntax error. Return one complete, valid "
                 "Python code block with balanced quotes/brackets and assign both "
-                "`result` and `answer_type`."
+                "`result` and `answer_type`. Do not use dotted or hyphenated table "
+                "names as Python variables; use the exact valid identifiers listed "
+                "below. Do not return Markdown fences inside the code.\n"
+                + self._schema_context(tables, mapping)
             )
 
         if "TypeError" in error_message or "ValueError" in error_message:

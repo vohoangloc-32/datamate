@@ -203,15 +203,17 @@ class QuestionAnalyzer:
         QuestionInfo
             Structured analysis of the question.
         """
-        info = QuestionInfo(original=question)
-        q_lower = question.lower().strip()
+        normalized_question = unicodedata.normalize("NFC", question)
+        normalized_question = re.sub(r"\s+", " ", normalized_question).strip()
+        info = QuestionInfo(original=normalized_question)
+        q_lower = normalized_question.lower()
 
         # 1. Classify expected answer type
         info.expected_type, info.confidence = self._classify_type(q_lower)
 
         # 2. Extract time expressions
         info.time_expressions = self.time_resolver.extract_and_resolve(
-            question, as_of_date
+            normalized_question, as_of_date
         )
 
         # 3. Detect aggregation
@@ -331,6 +333,8 @@ class QuestionAnalyzer:
 
     def _detect_aggregation(self, question: str) -> Optional[str]:
         """Detect aggregation type from the question."""
+        if re.search(r"\b(?:doanh thu|dthu|revenue)\b", question, re.IGNORECASE):
+            return "sum"
         for agg_type, patterns in _AGGREGATION_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, question, re.IGNORECASE):

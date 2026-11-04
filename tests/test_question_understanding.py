@@ -105,3 +105,15 @@ def test_detect_time_expressions(analyzer, as_of_date):
     expr_names = [e[0] for e in info.time_expressions]
     assert any("tháng này" in e for e in expr_names)
     assert any("tuần rồi" in e for e in expr_names)
+
+
+def test_explicit_quarter_and_year_are_resolved_as_one_period(analyzer):
+    info = analyzer.analyze(
+        "trong quý 3 năm 2025, doanh thu là bao nhiêu tiền",
+        date(2026, 9, 14),
+    )
+
+    assert info.aggregation == "sum"
+    assert info.time_expressions == [
+        ("quý 3 năm 2025", date(2025, 7, 1), date(2025, 9, 30))
+    ]

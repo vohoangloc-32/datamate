@@ -131,6 +131,25 @@ def _quarter_range(year: int, quarter: int, as_of: date) -> Tuple[date, date]:
     return first, last
 
 
+def _quarter_range_for_year(year: int, quarter: int) -> Tuple[date, date]:
+    """Return the complete explicit quarter, without relative-date capping."""
+    start_month = (quarter - 1) * 3 + 1
+    first = date(year, start_month, 1)
+    if start_month == 10:
+        last = date(year, 12, 31)
+    else:
+        last = date(year, start_month + 3, 1) - timedelta(days=1)
+    return first, last
+
+
+def _month_range_for_year(year: int, month: int) -> Tuple[date, date]:
+    """Return the complete explicit month, without relative-date capping."""
+    first = date(year, month, 1)
+    if month == 12:
+        return first, date(year, 12, 31)
+    return first, date(year, month + 1, 1) - timedelta(days=1)
+
+
 def _year_range(year: int, as_of: date) -> Tuple[date, date]:
     """Return (first_day, last_day_or_as_of) for a given year."""
     first = date(year, 1, 1)
@@ -195,6 +214,12 @@ class TimeResolver:
             return (prev_monday, prev_sunday)
 
         # --- Month patterns ---
+        m = re.match(r"tháng\s+(\d{1,2})\s+năm\s+(\d{4})", expr)
+        if m:
+            month_num, year = int(m.group(1)), int(m.group(2))
+            if 1 <= month_num <= 12:
+                return _month_range_for_year(year, month_num)
+
         if re.search(r"tháng\s*(này|nay)", expr):
             return _month_range(as_of.year, as_of.month, as_of)
 
@@ -216,6 +241,12 @@ class TimeResolver:
                 return _month_range(as_of.year, num, as_of)
 
         # --- Quarter patterns ---
+        m = re.match(r"quý\s+(\d)\s+năm\s+(\d{4})", expr)
+        if m:
+            quarter, year = int(m.group(1)), int(m.group(2))
+            if 1 <= quarter <= 4:
+                return _quarter_range_for_year(year, quarter)
+
         m = re.match(r"quý\s+(\d)", expr)
         if m:
             q = int(m.group(1))
@@ -297,6 +328,8 @@ class TimeResolver:
         """
         results = []
         patterns = [
+            r"(tháng\s+\d{1,2}\s+năm\s+\d{4})",
+            r"(quý\s+\d\s+năm\s+\d{4})",
             r"(tháng\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua|\d{1,2}|\w+))",
             r"(tuần\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua))",
             r"(quý\s+(?:này|nay|rồi|trước|qua|\d))",
@@ -307,11 +340,19 @@ class TimeResolver:
             r"(\d+\s*ngày\s*(?:trước|qua))",
         ]
 
+        consumed_spans = []
         for pattern in patterns:
             for m in re.finditer(pattern, question.lower()):
+                if any(
+                    m.start() < end and m.end() > start
+                    for start, end in consumed_spans
+                ):
+                    continue
                 expr = m.group(1)
                 resolved = self.resolve(expr, as_of)
                 if resolved:
                     results.append((expr, resolved[0], resolved[1]))
+                    if pattern in patterns[:2]:
+                        consumed_spans.append(m.span(1))
 
         return results

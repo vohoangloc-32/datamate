@@ -72,7 +72,27 @@ def test_prompt_marks_available_schema_authoritative_and_forbids_file_reads():
     assert "Order counts use distinct order IDs" in prompt
     assert "Use actual status values in the data" in prompt
     assert "For a status rate" in prompt
+    assert "half-open date ranges" in prompt
+    assert "structured plan and rulebook" in prompt
+    assert "empty result from unavailable data" in prompt
+    assert "system failures from unavailable data" in prompt
+    assert "nunique()" in prompt
     assert "Their table variables and columns are not available unless listed in AVAILABLE DATA" in prompt
+
+
+def test_prompt_includes_structured_query_plan():
+    prompt = PromptBuilder(few_shot_examples=[]).build(
+        **_prompt_inputs(),
+        query_plan={
+            "status": "validated",
+            "aggregation": "count_distinct",
+            "entity_column": "order_id",
+            "source_tables": ["orders"],
+        },
+    )
+
+    assert "STRUCTURED QUERY PLAN" in prompt
+    assert "count_distinct" in prompt
 
 
 def test_default_examples_never_convert_datetime_columns_to_python_dates():
