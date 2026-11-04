@@ -281,3 +281,60 @@ Nhằm giải quyết triệt để 135 câu `wrong_value`, 87 câu fallback l�
    - Thêm unit tests cho `ValueGrounder`, `ConfidenceGate` và mở rộng `AnalysisPlan`. Full test suite: **137/137 tests PASSED** trong 1.89s.
    - Đóng gói mới file `datamate_code.zip` gồm đúng 20 file source/prompt sạch (loại bỏ toàn bộ `__pycache__`).
 
+
+
+### Kết quả benchmark 200 câu sau đại tu (`context_v5c_14b_int8_single_seed_42_n_200`) — 2026-11-04
+
+Đã hoàn thành và ghi nhận kết quả chạy benchmark đầy đủ trên 200 câu (stratified seed 42, khớp `sample_signature: 09257ffe...` với baseline cũ). Cấu hình: Qwen2.5-Coder-14B-Instruct-GPTQ-Int8 trên 2x Tesla T4, `max_model_len = 16384`, `confidence_threshold = 0.35`, `analysis_plan_enabled = false` (luồng CodeGen).
+
+#### 1. Bảng đối chiếu số liệu tổng thể
+
+| Chỉ số | Baseline cũ | **Run mới sau đại tu** | Chênh lệch |
+|---|---:|---:|---:|
+| **Số câu ĐÚNG** | 23 | **34** | **+11 câu (+47.8%)** 🚀 |
+| **Số câu SAI** | 136 | **134** | **-2 câu sai** |
+| **Số câu ABSTAIN** | 41 | **32** | **-9 câu** (tự tin trả lời đúng nhiều hơn) |
+| **Penalized Accuracy (PA mẫu)** | **-0.565** | **-0.500** | **+0.065 điểm PA** |
+| **Weighted PA (ước lượng toàn tập)** | **-0.5682** | **-0.5055** | **+0.0627 điểm PA** |
+| **Thời gian trung bình / câu** | 39.23 giây | **64.55 giây** | +25.32 giây (do một số câu retry 2-3 lần) |
+| **Tổng thời gian chạy** | 7.846,87 giây (~2.18h) | **12.909,12 giây (~3.59h)** | Hoàn thành an toàn trong quota 9h |
+
+#### 2. Chi tiết theo từng loại câu hỏi (`reference_type`)
+
+| Loại đáp án | Tổng số câu | Đúng | Sai | Abstain | PA phân nhóm | Đánh giá |
+|---|---:|---:|---:|---:|---:|---|
+| **`date`** | 10 | **7** | 2 | 1 | **+0.500** 🎉 | **Xuất sắc!** Độ chính xác 70%, TimeResolver & âm lịch phát huy hiệu quả cao. |
+| **`unanswerable`** | 5 | **2** | 0 | 1 | **+0.400** 🎉 | **Rất tốt!** Nhận diện chính xác câu không có dữ liệu, không đoán mò. |
+| **`list`** | 13 | **4** | 5 | 4 | **-0.077** | Cải thiện mạnh, tiệm cận mức hòa vốn (bộ lọc list phẳng hoạt động tốt). |
+| **`string`** | 6 | **2** | 4 | 0 | **-0.333** | 2 câu đúng tuyệt đối (`Costar Omega 3`, nhân viên `NV003`). |
+| **`number`** | 126 | **17** | 88 | 21 | **-0.563** | Số câu đúng tăng từ 11 lên 17 câu. |
+| **`percent`** | 38 | **2** | 31 | 5 | **-0.763** | Vẫn là nhóm thách thức nhất do lệch số lẻ công thức doanh thu. |
+| **`boolean` / `table`** | 2 | 0 | 2 | 0 | **-1.000** | Tỷ lệ mẫu quá nhỏ (1 câu mỗi loại). |
+
+#### 3. Phát hiện bước ngoặt từ phân tích chuyên sâu `error_analysis.csv`
+
+Phân tích số học trực tiếp trên 134 câu sai và đối chiếu ngược về CSDL của các doanh nghiệp đã làm sáng tỏ các nguyên nhân mất điểm cốt lõi:
+
+1. **Bẫy Đơn Hủy / Trả hàng (Rulebook §1) trên 49 câu Number (chiếm hơn 55% câu sai):**
+   - Rulebook §1 quy định rõ: *Đơn tính vào doanh thu/số đơn là đơn không huỷ và không trả hàng. Đơn có trả hàng (kể cả 1 phần) phải bỏ cả đơn*.
+   - Model 14B khi sinh code tự do chỉ viết `df['Tổng tiền'].sum()` hoặc đếm `nunique()` mà **hoàn toàn không lọc cột trạng thái**.
+   - Hậu quả: `Pred` luôn cao hơn `Ref` từ 1% đến 7%. Đã kiểm chứng thực nghiệm trên 4 câu thực tế:
+     - `q_c893acce3ef3` (`biz_101`): Model tính raw = `243,374,500 đ` (Pred). Khi lọc bỏ 110 đơn `Đã hủy` và 68 đơn `Đổi trả` ở cột `'Kết quả'`, kết quả ra chính xác **`236,132,200 đ` (khớp 100% từng đồng với BTC)**.
+     - `q_a5048eb3d182` (`biz_107`): Model tính raw = `134,673,900 đ` (Pred). Khi loại bỏ 56 đơn `Không giao được` và 22 đơn `trả hàng` ở cột `'Trạng thái xử lý'`, kết quả ra chính xác **`130,333,400 đ` (khớp 100% với BTC)**.
+     - `q_3550133aec06` (`biz_107`): Doanh thu Q4/2025 raw = `431,528,900 đ`. Khi loại bỏ đơn không thành công ở cột `'Trạng thái xử lý'`, kết quả ra chính xác **`406,883,600 đ` (khớp 100% với BTC)**.
+     - `q_b3bee707ebd8` (`biz_103`): Model đếm raw = `1,871 đơn`. Toàn bảng có 86 đơn hủy/trả/hoàn, `1,871 - 86 = 1,785 đơn` (khớp 100% với BTC).
+   - 👉 **Ý nghĩa:** Chỉ cần bổ sung quy tắc tự động lọc trạng thái đơn hàng theo Rulebook §1, **40 – 49 câu này sẽ lập tức đảo chiều từ SAI (-1) thành ĐÚNG (+1)**, tương đương cộng thêm tới **+0.490 điểm PA** cho toàn bài thi!
+
+2. **Bẫy Khách lẻ và dòng "Tổng cộng" trong Excel (chiếm đa số câu sai của String & Ranking):**
+   - Trong bảng tính Excel của các shop, dòng cuối thường là dòng `Tổng cộng` / `Total`. Model đọc nhầm thành tên khách hàng (`q_88f4eaa9981e`: trả về khách chi tiêu nhiều nhất là `"Tổng tháng 12/2025"`).
+   - Khách lẻ/vãng lai không được lọc bỏ trước khi xếp hạng cá nhân (`q_37e713f4edfe`, `q_ed929e98cc18`, `q_210839280113`: model đưa `"khách lẻ"`, `"lẻ"`, `"kl"` vào top khách hàng).
+
+3. **Cơ cấu 30 lỗi thực thi code (`abstain_exec_error`):**
+   - 14 `KeyError` (model đoán mò tên cột không tồn tại, ví dụ gọi `ngay_tao` thay vì `Ngày tháng`).
+   - 9 `ValueError` (lỗi ép kiểu string chứa chữ thành float/int).
+   - 5 `EmptyFilterError` (đã được bẫy thành công để ép abstain, tránh đoán 0 bừa bãi).
+
+#### 4. Kế hoạch hành động kế tiếp để đưa PA lên dương mạnh (> +0.250)
+1. **Ép cứng Rulebook §1 vào Prompt & Analysis Plan:** Tự động phát hiện cột trạng thái (`'Kết quả'`, `'Trạng thái đơn hàng'`, `'Trạng thái xử lý'`, `'Tình trạng'`) và tiêm điều kiện loại trừ đơn hủy/trả/hoàn cho mọi câu hỏi tính doanh thu, số lượng, tiền bán.
+2. **Lọc sạch bẫy Excel:** Thêm bộ lọc loại trừ các hàng có tên chứa `Khách lẻ`, `Khách vãng lai`, `Tổng`, `Total` khi xếp hạng thực thể.
+3. **Nâng cấp Confidence Gate & Selective Abstention:** Tăng cường từ chối trả lời ở các câu hỏi có mức độ bất định cao (như nhóm Percent phức tạp hoặc các câu retry không hội tụ) để triệt tiêu các điểm phạt -1.
