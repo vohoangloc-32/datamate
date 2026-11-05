@@ -9,6 +9,7 @@ a wrong answer.
 import logging
 import math
 from typing import Any, Dict, Optional
+from .accounting_cleaner import normalize_text
 from .question_understanding import QuestionInfo
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class ConfidenceGate:
         execution_retries: int = 0,
         max_retries: int = 3,
         second_answer: Optional[Dict[str, Any]] = None,
+        question: str = "",
     ) -> Dict[str, Any]:
         """
         Evaluate whether to submit the answer or abstain.
@@ -56,7 +58,7 @@ class ConfidenceGate:
 
         # 1. Penalty for retries (more retries = less confidence)
         if execution_retries > 0:
-            retry_penalty = 0.20 * execution_retries
+            retry_penalty = 0.35 * execution_retries
             confidence -= retry_penalty
             reasons.append(f"retries={execution_retries}")
 
@@ -71,7 +73,7 @@ class ConfidenceGate:
             confidence -= 0.35
             reasons.append(f"implausible: {implausible}")
 
-        # 4. Zero numeric trap check (high risk of empty filter)
+        # 4. Zero numeric trap & high-risk percent checks
         answer_type = answer.get("type")
         val = answer.get("answer")
         if answer_type in ("number", "percent") and val is not None:
@@ -84,6 +86,18 @@ class ConfidenceGate:
                     elif question_info and question_info.aggregation in ("sum", "mean"):
                         confidence -= 0.25
                         reasons.append("zero_numeric_on_aggregation")
+                if answer_type == "percent":
+                    if execution_retries >= 1:
+                        confidence -= 0.35
+                        reasons.append("percent_after_retry")
+                    if num_val in (0.0, 100.0, -100.0):
+                        confidence -= 0.70
+                        reasons.append("degenerate_percent_value")
+                    if question:
+                        q_norm = normalize_text(question)
+                        if not any(k in q_norm for k in ("doanh thu", "dthu", "revenue")):
+                            confidence -= 0.70
+                            reasons.append("high_risk_percent")
             except (ValueError, TypeError):
                 pass
 

@@ -338,3 +338,49 @@ Phân tích số học trực tiếp trên 134 câu sai và đối chiếu ngư�
 1. **Ép cứng Rulebook §1 vào Prompt & Analysis Plan:** Tự động phát hiện cột trạng thái (`'Kết quả'`, `'Trạng thái đơn hàng'`, `'Trạng thái xử lý'`, `'Tình trạng'`) và tiêm điều kiện loại trừ đơn hủy/trả/hoàn cho mọi câu hỏi tính doanh thu, số lượng, tiền bán.
 2. **Lọc sạch bẫy Excel:** Thêm bộ lọc loại trừ các hàng có tên chứa `Khách lẻ`, `Khách vãng lai`, `Tổng`, `Total` khi xếp hạng thực thể.
 3. **Nâng cấp Confidence Gate & Selective Abstention:** Tăng cường từ chối trả lời ở các câu hỏi có mức độ bất định cao (như nhóm Percent phức tạp hoặc các câu retry không hội tụ) để triệt tiêu các điểm phạt -1.
+
+### Kết quả benchmark 200 câu Phase 1 với Accounting Cleaner (`gugugaga2`) — 2026-11-05
+
+Đã hoàn thành và ghi nhận kết quả chạy benchmark thực tế trên Kaggle (`gugugaga2`, `code_sha256: 239cc21d...`, `created_utc: 2026-11-04T15:34:02.918606+00:00`). Bộ code tích hợp `accounting_cleaner.py`, sửa thứ tự subtotal/dedup trong `data_loader.py`, chuẩn hóa trạng thái và cột doanh thu Rulebook §1 & §8, và làm tròn AOV theo Rulebook §3.
+
+#### 1. Bảng đối chiếu số liệu tổng thể
+
+| Chỉ số | Baseline cũ (`34f784b0`) | Dự đoán Oracle trước Gate | **Kaggle Phase 1 (`239cc21d`)** | Chênh lệch so với Baseline |
+|---|---:|---:|---:|---:|
+| **Số câu ĐÚNG** | 34 | 80 | **78** | **+44 câu (+129.4%)** 🚀 |
+| **Số câu SAI** | 134 | 84 | **86** | **-48 câu (-35.8%)** 📉 |
+| **Số câu ABSTAIN** | 32 | 36 | **36** | **+4 câu** |
+| **Penalized Accuracy (PA mẫu)** | **-0.5000** | **-0.0200** | **-0.0400** | **+0.4600 điểm PA** |
+| **Weighted PA (ước lượng toàn tập)** | **-0.5055** | **-0.0250** | **-0.0452** | **+0.4603 điểm PA** |
+| **Thời gian trung bình / câu** | 64.55 giây | — | **67.97 giây** | +3.42 giây |
+| **Tổng thời gian chạy** | 12.909,12 giây (~3.59h) | — | **13.594,75 giây (~3.77h)** | Hoàn thành an toàn trong quota |
+
+#### 2. Chi tiết theo từng loại câu hỏi (`reference_type`)
+
+| Loại đáp án | Tổng số câu | Cũ (Đ/S/A) | **Mới (Đ/S/A)** | PA Cũ | **PA Mới** | Đánh giá |
+|---|---:|---|---|---:|---:|---|
+| **`number`** | 126 | 17 / 88 / 21 | **52 / 51 / 23** | -0.5635 | **+0.0079** 🟢 | Tăng gấp 3 lần số câu đúng (+35 câu), chính thức vượt mốc 0 lên DƯƠNG! |
+| **`date`** | 10 | 7 / 2 / 1 | **9 / 1 / 0** | +0.5000 | **+0.8000** 🟢 | Độ chính xác 90%. |
+| **`percent`** | 38 | 2 / 31 / 5 | **10 / 21 / 7** | -0.7632 | **-0.2895** 🟡 | Tăng gấp 5 lần số câu đúng (2 -> 10), giảm 10 câu sai. |
+| **`list`** | 13 | 4 / 5 / 4 | **5 / 5 / 3** | -0.0769 | **0.0000** 🟢 | Chạm mức hòa vốn nhờ lọc sạch 'Khách lẻ'. |
+| **`string`** | 6 | 2 / 4 / 0 | **1 / 3 / 2** | -0.3333 | **-0.3333** | Giữ nguyên PA. |
+| **`unanswerable`** | 5 | 2 / 2 / 1 | **1 / 3 / 1** | 0.0000 | **-0.4000** | Mất 1 câu do retry sửa lỗi TypeError thành công nên trả số thay vì abstain. |
+| **`boolean` / `table`** | 2 | 0 / 2 / 0 | **0 / 2 / 0** | -1.0000 | **-1.0000** | Mẫu nhỏ (1 câu mỗi loại). |
+
+#### 3. Phát hiện từ phân tích chuyên sâu 86 câu sai và 34 câu lỗi thực thi
+
+1. **Bẫy gộp nhầm đơn 'Trả hàng' vào câu hỏi 'Hủy đơn' (14 câu sai):**
+   - Trong `accounting_cleaner.py`, `format_accounting_context` ghi chung `cancel/return=['Đã hủy', 'Đã trả hàng']`. LLM đọc gợi ý này và đưa cả đơn trả hàng vào `.isin(...)` khi tính số đơn hủy hoặc tỷ lệ hủy đơn, đồng thời đếm theo dòng `.shape[0]` thay vì đếm mã đơn duy nhất `nunique(order_id)`.
+   - Thực nghiệm `test_cancel_14.py` chứng minh: tách riêng `cancel_only` vs `return_only` và gom nhóm cấp mã đơn giúp **10/14 câu lập tức khớp 100% với đáp án BTC** (+10 câu đúng, -10 câu sai = **+0.1000 PA**).
+2. **Bẫy chuỗi tiền tệ tiếng Việt và Header Unnamed (22/34 câu `abstain_exec_error`):**
+   - Cột tiền tệ chứa `'25k'`, `'575.000đ'`, `'262.500đ'` gây `ValueError` khi parse số.
+   - Header 2 dòng gộp ô bị `pd.read_excel` đặt tên `Unnamed: 1..9` khiến LLM đoán sai tên cột sinh `KeyError`.
+3. **Bảng Header thiếu cột doanh thu trước giảm giá (`biz_129`) và Bảng trả hàng riêng (`biz_123`):**
+   - `biz_129`: Bảng `don_hang` chỉ có `'Tổng sau giảm giá'`; cần cộng `'Thành tiền'` từ `chi_tiet_don` để có `'Tổng tiền hàng'` chuẩn Rulebook §1.
+   - `biz_123`: Cần loại trừ các đơn có trong bảng trả hàng riêng `tra_hang`.
+4. **Thiếu đối số `question=question` khi gọi `confidence_gate.evaluate` trong `predict.py`:**
+   - Khiến bộ lọc câu hỏi rủi ro cao của ConfidenceGate chưa được kích hoạt đầy đủ.
+
+#### 4. Kế hoạch Phase 2
+- Xem chi tiết tại `implementation_plan.md` với 6 hạng mục kỹ thuật để đưa PA từ `-0.0400` lên `+0.155 ~ +0.220`.
+

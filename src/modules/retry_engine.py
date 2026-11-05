@@ -61,6 +61,7 @@ class RetryEngine:
         expected_type: Optional[str] = None,
         token_counter: Optional[Callable[[str], int]] = None,
         max_prompt_tokens: Optional[int] = None,
+        question: str = "",
     ) -> Tuple[ExecutionResult, int]:
         """
         Run the code generation → execution loop with retries.
@@ -126,7 +127,7 @@ class RetryEngine:
             # Execute the generated code
             t0 = time.time()
             result = self.executor.execute(
-                llm_response, tables, as_of_date, extract_code=True
+                llm_response, tables, as_of_date, extract_code=True, question=question
             )
             exec_time = time.time() - t0
             logger.info("Code execution attempt %d took %.1fs, success=%s",

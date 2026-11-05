@@ -16,6 +16,11 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import unicodedata
 
+from .accounting_cleaner import (
+    dedup_order_table_rows,
+    remove_subheader_and_subtotal_rows,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +63,15 @@ def _monthly_sheet_period(name: str) -> Optional[str]:
 
 def _is_order_id_column(name: str) -> bool:
     compact = _compact_col_name(name)
-    return any(token in compact for token in ("madon", "orderid", "orderno", "ordernumber"))
+    return any(
+        token in compact
+        for token in (
+            "madon", "mahd", "sohd", "mahoadon", "sohoadon",
+            "orderid", "orderno", "ordernumber", "machungtu",
+            "sochungtu", "soct", "madh", "sodon", "mabill",
+            "sophieu", "maphieu", "magd",
+        )
+    )
 
 
 def _is_order_metadata_column(name: str) -> bool:
@@ -69,6 +82,8 @@ def _is_order_metadata_column(name: str) -> bool:
             "ngaydat",
             "orderdate",
             "trangthaidonhang",
+            "trangthai",
+            "tinhtrang",
             "orderstatus",
             "tenkhachhang",
             "customername",
@@ -228,8 +243,10 @@ def _load_csv(filepath: str) -> Dict[str, pd.DataFrame]:
         df = pd.read_csv(filepath, encoding=encoding, on_bad_lines="warn")
 
     df.columns = [_normalize_col_name(c) for c in df.columns]
+    df = remove_subheader_and_subtotal_rows(df)
     df = _fill_merged_order_metadata(df)
     df = _coerce_types(df)
+    df = dedup_order_table_rows(df)
     logger.info("Loaded CSV %s: %d rows × %d cols", filepath, len(df), len(df.columns))
     return {stem: df}
 
@@ -268,8 +285,10 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                     df = df.dropna(how="all").reset_index(drop=True)
 
             df.columns = [_normalize_col_name(c) for c in df.columns]
+            df = remove_subheader_and_subtotal_rows(df)
             df = _fill_merged_order_metadata(df)
             df = _coerce_types(df)
+            df = dedup_order_table_rows(df)
             # Use file_stem__sheet_name as key if multiple sheets
             key = f"{Path(filepath).stem}__{sheet}" if len(xls.sheet_names) > 1 else Path(filepath).stem
             result[key] = df
@@ -348,7 +367,9 @@ def _load_sqlite(filepath: str) -> Dict[str, pd.DataFrame]:
             try:
                 df = pd.read_sql_query(f'SELECT * FROM "{table}"', conn)
                 df.columns = [_normalize_col_name(c) for c in df.columns]
+                df = remove_subheader_and_subtotal_rows(df)
                 df = _coerce_types(df)
+                df = dedup_order_table_rows(df)
                 result[table] = df
                 logger.info("Loaded SQLite table '%s' from %s: %d rows × %d cols",
                             table, filepath, len(df), len(df.columns))

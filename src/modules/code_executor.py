@@ -20,6 +20,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
+from .accounting_cleaner import (
+    patch_code_and_tables_for_rulebook,
+    question_is_average_order_value,
+    round_half_up_vnd,
+)
+
 logger = logging.getLogger(__name__)
 
 _RESERVED_EXEC_NAMES = frozenset({
@@ -273,6 +279,7 @@ class CodeExecutor:
         tables: Dict[str, pd.DataFrame],
         as_of_date: str,
         extract_code: bool = True,
+        question: str = "",
     ) -> ExecutionResult:
         """
         Execute code with pre-loaded DataFrames.
@@ -311,8 +318,14 @@ class CodeExecutor:
             result.error = f"FileAccessError: {file_read_violation}"
             return result
 
+        exec_code, exec_tables = (
+            patch_code_and_tables_for_rulebook(code, question, tables)
+            if question
+            else (code, tables)
+        )
+
         # Build execution environment
-        exec_globals = _create_safe_globals(tables, as_of_date)
+        exec_globals = _create_safe_globals(exec_tables, as_of_date)
         original_dataframe_ids = {
             id(value)
             for value in exec_globals.values()
@@ -324,14 +337,32 @@ class CodeExecutor:
         stderr_capture = io.StringIO()
 
         try:
-            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exec(code, exec_globals)
+            try:
+                with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                    exec(exec_code, exec_globals)
+            except Exception:
+                if exec_code != code or exec_tables is not tables:
+                    stdout_capture = io.StringIO()
+                    stderr_capture = io.StringIO()
+                    exec_globals = _create_safe_globals(tables, as_of_date)
+                    original_dataframe_ids = {
+                        id(value)
+                        for value in exec_globals.values()
+                        if isinstance(value, pd.DataFrame)
+                    }
+                    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                        exec(code, exec_globals)
+                else:
+                    raise
 
             result.stdout = stdout_capture.getvalue()
             result.stderr = stderr_capture.getvalue()
 
             # Extract results
-            result.result = exec_globals.get("result", None)
+            raw_res = exec_globals.get("result", None)
+            if question and question_is_average_order_value(question):
+                raw_res = round_half_up_vnd(raw_res)
+            result.result = raw_res
             result.answer_type = exec_globals.get("answer_type", "abstain")
             result.success = True
             result.empty_dataframes = [

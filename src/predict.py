@@ -41,6 +41,10 @@ from modules.answer_formatter import format_answer, build_submission_line
 from modules.confidence_gate import ConfidenceGate
 from modules.question_logger import QuestionLogger
 from modules.value_grounder import ValueGrounder
+from modules.accounting_cleaner import (
+    format_accounting_context,
+    prepare_tables_for_question,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -329,13 +333,22 @@ class DataMatePipeline:
         self.question_logger.start_question(q_id)
 
         try:
-            # 1. Load business data
+            # 1. Load business data and apply Rulebook metric-aware filtering
             self._load_business(biz_id)
-            tables = self._data_cache[biz_id]
+            raw_tables = self._data_cache[biz_id]
+            tables = prepare_tables_for_question(raw_tables, question)
             schema = self._schema_cache[biz_id]
             readme = self._readme_cache[biz_id]
             grounder = self._grounder_cache.get(biz_id)
-            grounded_context = grounder.format_grounded_context(question) if grounder else None
+            grounded_parts = [
+                part
+                for part in (
+                    grounder.format_grounded_context(question) if grounder else None,
+                    format_accounting_context(raw_tables, question),
+                )
+                if part
+            ]
+            grounded_context = "\n\n".join(grounded_parts) if grounded_parts else None
 
             # Load the model tokenizer before building a prompt so the prompt
             # budget is measured with the same tokenizer used for generation.
@@ -418,6 +431,7 @@ class DataMatePipeline:
                     expected_type=q_info.expected_type,
                     token_counter=self._prompt_token_counter,
                     max_prompt_tokens=self._max_prompt_tokens,
+                    question=question,
                 )
 
             # 6. Confidence gate
