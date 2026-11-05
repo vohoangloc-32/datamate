@@ -90,14 +90,12 @@ class ConfidenceGate:
                     if execution_retries >= 1:
                         confidence -= 0.35
                         reasons.append("percent_after_retry")
-                    if num_val in (0.0, 100.0, -100.0):
+                    if num_val in (100.0, -100.0):
                         confidence -= 0.70
                         reasons.append("degenerate_percent_value")
-                    if question:
-                        q_norm = normalize_text(question)
-                        if not any(k in q_norm for k in ("doanh thu", "dthu", "revenue")):
-                            confidence -= 0.70
-                            reasons.append("high_risk_percent")
+                    elif num_val == 0.0 and execution_retries > 0:
+                        confidence -= 0.35
+                        reasons.append("zero_percent_after_retry")
             except (ValueError, TypeError):
                 pass
 

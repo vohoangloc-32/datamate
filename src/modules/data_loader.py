@@ -28,6 +28,73 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+_CURRENCY_UNIT_TRAILING_RE = re.compile(r"(?i)\s*(?:đ|vnd|dong|d)$")
+_CURRENCY_COMBO_RE = re.compile(r"(\d+)\s*(?:tr|trieu)\s*(\d{1,3})", re.IGNORECASE)
+_CURRENCY_MILLIONS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:tr|trieu)", re.IGNORECASE)
+_CURRENCY_THOUSANDS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*k", re.IGNORECASE)
+_CURRENCY_DOT_THOUSANDS_RE = re.compile(r"\d{1,3}(?:\.\d{3})+")
+_CURRENCY_COMMA_THOUSANDS_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+
+
+def parse_vietnamese_currency_str(val: object) -> object:
+    """
+    Parse informal Vietnamese currency strings per Rulebook §8 lines 113–122.
+    Handles:
+      - '25.000đ', '-53.500đ', '575.000 đ', '50.000 VND'
+      - '1tr440', '1tr140', '9tr960' (millions + thousands combo)
+      - '16,56tr', '1,84tr' (decimal millions)
+      - '86k', '1168k', '29200k' (thousands)
+      - '1.016.000', '1,250,000' (standard thousand-separated numbers)
+    Returns int/float if successfully parsed, else original val.
+    """
+    if not isinstance(val, str):
+        return val
+    s = val.strip()
+    if not s or s.lower() == "nan":
+        return val
+
+    sign = -1 if s.startswith("-") else 1
+    s_clean = s.lstrip("+-").strip()
+    s_no_unit = _CURRENCY_UNIT_TRAILING_RE.sub("", s_clean).strip()
+
+    # 1. Combo millions + thousands: e.g. 1tr440 -> 1_440_000
+    m_combo = _CURRENCY_COMBO_RE.fullmatch(s_no_unit)
+    if m_combo:
+        millions = int(m_combo.group(1))
+        rem = m_combo.group(2)
+        thousands = int(rem.ljust(3, "0")) * 1000
+        return sign * (millions * 1_000_000 + thousands)
+
+    # 2. Millions with tr / trieu: e.g. 16,56tr -> 16_560_000
+    m_tr = _CURRENCY_MILLIONS_RE.fullmatch(s_no_unit)
+    if m_tr:
+        num_str = m_tr.group(1).replace(",", ".")
+        return sign * round(float(num_str) * 1_000_000)
+
+    # 3. Thousands with k: e.g. 86k -> 86_000, 1168k -> 1_168_000
+    m_k = _CURRENCY_THOUSANDS_RE.fullmatch(s_no_unit)
+    if m_k:
+        num_str = m_k.group(1).replace(",", ".")
+        return sign * round(float(num_str) * 1_000)
+
+    # 4. Standard dot-separated thousands: e.g. 25.000 -> 25000
+    if _CURRENCY_DOT_THOUSANDS_RE.fullmatch(s_no_unit):
+        return sign * int(s_no_unit.replace(".", ""))
+
+    # 5. Standard comma-separated thousands: e.g. 1,250,000 -> 1250000
+    if _CURRENCY_COMMA_THOUSANDS_RE.fullmatch(s_no_unit):
+        return sign * int(s_no_unit.replace(",", ""))
+
+    # 6. Plain float / int
+    try:
+        f = float(s_no_unit.replace(",", ""))
+        return sign * (int(f) if f.is_integer() else f)
+    except Exception:
+        pass
+
+    return val
+
+
 def _normalize_col_name(name: str) -> str:
     """Normalize a column name: Unicode NFC, strip, collapse whitespace."""
     name = unicodedata.normalize("NFC", str(name))
@@ -203,6 +270,14 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
                 df[col] = pd.to_numeric(full_cleaned, errors="coerce")
                 continue
 
+            # 2b. Try Vietnamese currency parsing (e.g., '25.000đ', '86k', '1tr440', '16,56tr')
+            parsed_curr = non_null.map(parse_vietnamese_currency_str)
+            numeric_curr = pd.to_numeric(parsed_curr, errors="coerce")
+            if numeric_curr.notna().sum() > 0.7 * len(non_null):
+                full_parsed = df[col].map(parse_vietnamese_currency_str)
+                df[col] = pd.to_numeric(full_parsed, errors="coerce")
+                continue
+
             # 3. Try datetime only if sample strings contain date separators and years are plausible
             sample_str = " ".join(non_null.head(5).astype(str))
             if any(sep in sample_str for sep in ("/", "-")):
@@ -285,6 +360,39 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                     df = df.dropna(how="all").reset_index(drop=True)
 
             df.columns = [_normalize_col_name(c) for c in df.columns]
+
+            # Promote subheader row 0 if columns contain Unnamed: and row 0 has table column tokens
+            if any(str(c).startswith("Unnamed:") for c in df.columns) and not df.empty:
+                row0 = df.iloc[0]
+                row0_tokens = [
+                    unicodedata.normalize("NFKD", str(v).casefold()).strip()
+                    for v in row0
+                    if pd.notna(v) and str(v).strip()
+                ]
+                match_count = sum(
+                    1 for v in row0_tokens
+                    if any(
+                        tok in v
+                        for tok in (
+                            "so_luong", "unit", "donvi", "tri gia", "status", "gia le",
+                            "gia", "ma hoa don", "ma phieu", "ngay giao dich", "khach",
+                            "tenkh", "tien", "so luong hang", "ten sp", "gio", "ngay lap"
+                        )
+                    )
+                )
+                if match_count >= 2:
+                    new_cols = []
+                    for c, v in zip(df.columns, row0):
+                        v_str = str(v).strip() if pd.notna(v) else ""
+                        c_str = str(c).strip()
+                        c_lower = unicodedata.normalize("NFKD", c_str.casefold()).strip()
+                        if v_str and (c_str.startswith("Unnamed:") or c_lower in {"hang", "don", "tien"}):
+                            new_cols.append(_normalize_col_name(v_str))
+                        else:
+                            new_cols.append(_normalize_col_name(c_str))
+                    df.columns = new_cols
+                    df = df.iloc[1:].reset_index(drop=True)
+
             df = remove_subheader_and_subtotal_rows(df)
             df = _fill_merged_order_metadata(df)
             df = _coerce_types(df)

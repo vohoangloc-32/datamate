@@ -442,6 +442,7 @@ class DataMatePipeline:
                 ),
                 question_info=q_info,
                 execution_retries=retries,
+                question=question,
             )
 
             # 7. Log

@@ -274,7 +274,7 @@ def test_confidence_gate_abstains_on_high_risk_percent_and_retries():
     gate = ConfidenceGate(min_confidence=0.45)
     q_info = QuestionInfo(expected_type="percent", confidence=0.8)
 
-    # Degenerate -100% or 0% -> abstain
+    # Degenerate -100% or 100% -> abstain
     res_deg = gate.evaluate(
         {"type": "percent", "answer": -100.0},
         question_info=q_info,
@@ -283,14 +283,25 @@ def test_confidence_gate_abstains_on_high_risk_percent_and_retries():
     )
     assert res_deg["type"] == "abstain"
 
-    # Non-revenue percent question -> abstain
-    res_non_rev = gate.evaluate(
+    # Percent after execution retries -> abstain (flaky code execution)
+    res_retry = gate.evaluate(
+        {"type": "percent", "answer": 1.35},
+        question_info=q_info,
+        execution_retries=1,
+        question="Tháng 5/2025 tỉ lệ đơn bị huỷ là bao nhiêu %?",
+    )
+    assert res_retry["type"] == "abstain"
+
+    # Valid percent on first try without retries -> accepted (generalizable across metrics)
+    res_valid = gate.evaluate(
         {"type": "percent", "answer": 1.35},
         question_info=q_info,
         execution_retries=0,
         question="Tháng 5/2025 tỉ lệ đơn bị huỷ là bao nhiêu %?",
     )
-    assert res_non_rev["type"] == "abstain"
+    assert res_valid["type"] == "percent"
+    assert res_valid["answer"] == 1.35
+
 
     # Clean revenue percent question with 0 retries -> accepted
     res_rev = gate.evaluate(
@@ -301,3 +312,19 @@ def test_confidence_gate_abstains_on_high_risk_percent_and_retries():
     )
     assert res_rev["type"] == "percent"
     assert res_rev["answer"] == 17.62
+
+
+def test_vietnamese_currency_parsing():
+    from src.modules.data_loader import parse_vietnamese_currency_str
+
+    assert parse_vietnamese_currency_str("25.000đ") == 25000
+    assert parse_vietnamese_currency_str("-53.500đ") == -53500
+    assert parse_vietnamese_currency_str("86k") == 86000
+    assert parse_vietnamese_currency_str("1168k") == 1168000
+    assert parse_vietnamese_currency_str("1tr440") == 1440000
+    assert parse_vietnamese_currency_str("16,56tr") == 16560000
+    assert parse_vietnamese_currency_str("1,84tr") == 1840000
+    assert parse_vietnamese_currency_str("1.016.000đ") == 1016000
+    assert parse_vietnamese_currency_str("720.000đ") == 720000
+    assert parse_vietnamese_currency_str("9tr960") == 9960000
+    assert parse_vietnamese_currency_str("50.000đ") == 50000

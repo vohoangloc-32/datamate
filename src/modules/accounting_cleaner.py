@@ -350,6 +350,15 @@ def prepare_tables_for_question(
     out: Dict[str, pd.DataFrame] = {}
     bad_order_ids: Set[Any] = set()
 
+    # Detect standalone return tables (e.g. tra_hang) and collect their order IDs
+    for name, df in tables.items():
+        if any(term in name.lower() for term in ("tra_hang", "phieu_tra", "hoan_tra", "return")):
+            oid = find_order_id_column(df)
+            if oid is not None:
+                returned_ids = set(df[oid].dropna().unique())
+                if filter_status:
+                    bad_order_ids.update(returned_ids)
+
     for name, df in tables.items():
         work = remove_subheader_and_subtotal_rows(df.copy())
         work = dedup_order_table_rows(work)
@@ -442,7 +451,14 @@ def patch_code_and_tables_for_rulebook(
             if det:
                 scol, mp = det
                 c_vals = [v for v, c in mp.items() if c == "cancel"]
+                r_vals = [v for v, c in mp.items() if c == "return"]
                 if c_vals:
+                    # Relabel return values to __RETURN_ONLY__ so pure cancel questions
+                    # matching .isin(['Đã hủy', 'Đã trả hàng']) will ONLY match cancelled rows.
+                    if r_vals:
+                        df[scol] = df[scol].map(
+                            lambda v: "__RETURN_ONLY__" if mp.get(str(v)) == "return" else v
+                        )
                     df[scol] = df[scol].map(
                         lambda v: "__CANCEL__" if mp.get(str(v)) == "cancel" else v
                     )
@@ -458,6 +474,22 @@ def patch_code_and_tables_for_rulebook(
                         patched = patched.replace(f"'{cv}'", "'__CANCEL__'").replace(
                             f'"{cv}"', '"__CANCEL__"'
                         )
+
+        # If question asks to count orders or calculate order cancellation rate (Rulebook §1),
+        # ensure .shape[0] on cancelled rows deduplicates by order ID for multi-line order tables.
+        is_order_counting = any(
+            k in qtext for k in ("dem so don", "may don", "bao nhieu don", "ti le don", "ti le huy", "% don", "so don")
+        )
+        if is_order_counting:
+            for tname, df in exec_tables.items():
+                oid = find_order_id_column(df)
+                if oid is not None and df[oid].duplicated().any():
+                    # Rewrite .shape[0] on order-level calculations
+                    patched = re.sub(
+                        rf"(\[[^\]]*__CANCEL__[^\]]*\])\.shape\[0\]",
+                        rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
+                        patched,
+                    )
 
     if question_is_pure_revenue(question):
         has_tong_tien_hang = any(
@@ -499,10 +531,16 @@ def format_accounting_context(
         det = detect_status_column(df)
         if det:
             scol, mp = det
-            cancel_ret = [v for v, c in mp.items() if c in ("cancel", "return")]
+            cancel_vals = [v for v, c in mp.items() if c == "cancel"]
+            return_vals = [v for v, c in mp.items() if c == "return"]
             valid_vals = [v for v, c in mp.items() if c in ("completed", "shipping")]
+            status_desc = f"valid={valid_vals}"
+            if cancel_vals:
+                status_desc += f", cancelled_only={cancel_vals}"
+            if return_vals:
+                status_desc += f", returned_only={return_vals}"
             notes.append(
-                f"- Table `{name}` status column `{scol}`: valid={valid_vals}, cancel/return={cancel_ret}."
+                f"- Table `{name}` status column `{scol}`: {status_desc}."
             )
         if "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns:
             notes.append(
@@ -512,6 +550,22 @@ def format_accounting_context(
             notes.append(
                 f"- Table `{name}`: Use `'Tien hang'` for revenue (Rulebook §1); do NOT use `'TongTien'`."
             )
+        elif "Phải thu" in df.columns and "Thanh toán" in df.columns:
+            notes.append(
+                f"- Table `{name}`: In `don_hang`, `'Phải thu'` and `'Thanh toán'` are POST-discount (net paid). Pre-discount gross revenue (Rulebook §1) is the sum of `'Tiền bán'` across item lines in `chi_tiet_don`."
+            )
+
+    # General Rulebook §3 note for product ranking: service fee exclusion
+    notes.append(
+        "- Product Ranking (Rulebook §3): Dòng 'Phí phục vụ' không phải mặt hàng: không xếp hạng, không đếm (nhưng vẫn tính vào doanh thu)."
+    )
+
+    # General Rulebook §10 note for base unit conversion
+    has_quydoi = any("quydoi" in k.lower() or "don_vi" in k.lower() for k in tables)
+    if has_quydoi:
+        notes.append(
+            "- Unit Conversion (Rulebook §3 & §10): Khi xếp hạng bán chạy hoặc tính tổng số lượng, phải quy đổi về đơn vị cơ bản bằng bảng quy đổi (`DanhSachQuyDoi` / `don_vi_sp`)."
+        )
     if not notes:
         return None
     return "ACCOUNTING & RULEBOOK COLUMN NOTES:\n" + "\n".join(notes)
