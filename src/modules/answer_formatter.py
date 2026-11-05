@@ -246,6 +246,7 @@ def format_answer(
     value: Any,
     answer_type: str,
     reason: Optional[str] = None,
+    question: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Format an answer for submission.
@@ -258,6 +259,8 @@ def format_answer(
         The answer type string.
     reason : str, optional
         Reason for unanswerable/abstain.
+    question : str, optional
+        The question text to apply rulebook domain rounding (e.g., AOV integer rounding).
 
     Returns
     -------
@@ -283,6 +286,14 @@ def format_answer(
         answer_type = "string"
 
     formatted_value = _to_json_compatible(formatter(value))
+
+    if formatted_value is not None and answer_type == "number" and question:
+        try:
+            from .accounting_cleaner import question_is_aov
+            if question_is_aov(question) and isinstance(formatted_value, (int, float)):
+                formatted_value = int(round(formatted_value))
+        except Exception:
+            pass
 
     if formatted_value is None:
         logger.warning("Formatting produced None for type=%s, value=%r",

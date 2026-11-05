@@ -95,9 +95,22 @@ def parse_vietnamese_currency_str(val: object) -> object:
     return val
 
 
+def repair_mojibake_name(name: str) -> str:
+    """Repair CP437/CP1252 mojibake from zip extractions (e.g., 'Danh s├ích h├áng h├│a' -> 'Danh sách hàng hóa')."""
+    if not name:
+        return name
+    if any(c in name for c in "├─│┤┬┴┼ß"):
+        try:
+            return name.encode("cp437").decode("utf-8")
+        except Exception:
+            pass
+    return name
+
+
 def _normalize_col_name(name: str) -> str:
     """Normalize a column name: Unicode NFC, strip, collapse whitespace."""
-    name = unicodedata.normalize("NFC", str(name))
+    name = repair_mojibake_name(str(name))
+    name = unicodedata.normalize("NFC", name)
     name = name.strip()
     name = re.sub(r"\s+", " ", name)
     return name
@@ -271,12 +284,20 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
                 continue
 
             # 2b. Try Vietnamese currency parsing (e.g., '25.000đ', '86k', '1tr440', '16,56tr')
-            parsed_curr = non_null.map(parse_vietnamese_currency_str)
-            numeric_curr = pd.to_numeric(parsed_curr, errors="coerce")
-            if numeric_curr.notna().sum() > 0.7 * len(non_null):
-                full_parsed = df[col].map(parse_vietnamese_currency_str)
-                df[col] = pd.to_numeric(full_parsed, errors="coerce")
-                continue
+            sample_curr = non_null.head(20).astype(str)
+            if any(
+                _CURRENCY_UNIT_TRAILING_RE.search(v)
+                or _CURRENCY_COMBO_RE.search(v)
+                or _CURRENCY_MILLIONS_RE.search(v)
+                or _CURRENCY_THOUSANDS_RE.search(v)
+                for v in sample_curr
+            ):
+                parsed_curr = non_null.map(parse_vietnamese_currency_str)
+                numeric_curr = pd.to_numeric(parsed_curr, errors="coerce")
+                if numeric_curr.notna().sum() > 0.7 * len(non_null):
+                    full_parsed = df[col].map(parse_vietnamese_currency_str)
+                    df[col] = pd.to_numeric(full_parsed, errors="coerce")
+                    continue
 
             # 3. Try datetime only if sample strings contain date separators and years are plausible
             sample_str = " ".join(non_null.head(5).astype(str))
@@ -302,7 +323,8 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
 
 def _load_csv(filepath: str) -> Dict[str, pd.DataFrame]:
     """Load a CSV file, returning {filename_stem: DataFrame}."""
-    stem = Path(filepath).stem
+    raw_stem = Path(filepath).stem
+    stem = repair_mojibake_name(raw_stem)
     encoding = _detect_encoding(filepath)
 
     # Try common separators
@@ -323,13 +345,18 @@ def _load_csv(filepath: str) -> Dict[str, pd.DataFrame]:
     df = _coerce_types(df)
     df = dedup_order_table_rows(df)
     logger.info("Loaded CSV %s: %d rows × %d cols", filepath, len(df), len(df.columns))
-    return {stem: df}
+    res = {stem: df}
+    if raw_stem != stem:
+        res[raw_stem] = df
+    return res
 
 
 def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
     """Load an Excel file (all sheets), returning {sheet_name: DataFrame}."""
     result = {}
     monthly_sheets = []
+    raw_stem = Path(filepath).stem
+    stem = repair_mojibake_name(raw_stem)
     xls = pd.ExcelFile(filepath, engine="openpyxl")
     for sheet in xls.sheet_names:
         try:
@@ -382,24 +409,35 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                 )
                 if match_count >= 2:
                     new_cols = []
+                    aliases_to_add = {}
                     for c, v in zip(df.columns, row0):
                         v_str = str(v).strip() if pd.notna(v) else ""
                         c_str = str(c).strip()
                         c_lower = unicodedata.normalize("NFKD", c_str.casefold()).strip()
                         if v_str and (c_str.startswith("Unnamed:") or c_lower in {"hang", "don", "tien"}):
-                            new_cols.append(_normalize_col_name(v_str))
+                            clean_v = _normalize_col_name(v_str)
+                            new_cols.append(clean_v)
+                            if c_str.startswith("Unnamed:"):
+                                aliases_to_add[c_str] = clean_v
                         else:
                             new_cols.append(_normalize_col_name(c_str))
                     df.columns = new_cols
                     df = df.iloc[1:].reset_index(drop=True)
+                    # Preserve Unnamed: aliases for backward compatibility
+                    for old_col, new_col in aliases_to_add.items():
+                        if old_col not in df.columns:
+                            df[old_col] = df[new_col]
 
             df = remove_subheader_and_subtotal_rows(df)
             df = _fill_merged_order_metadata(df)
             df = _coerce_types(df)
             df = dedup_order_table_rows(df)
             # Use file_stem__sheet_name as key if multiple sheets
-            key = f"{Path(filepath).stem}__{sheet}" if len(xls.sheet_names) > 1 else Path(filepath).stem
+            key = f"{stem}__{sheet}" if len(xls.sheet_names) > 1 else stem
             result[key] = df
+            if raw_stem != stem:
+                raw_key = f"{raw_stem}__{sheet}" if len(xls.sheet_names) > 1 else raw_stem
+                result[raw_key] = df
             month = _monthly_sheet_period(sheet)
             if month is not None:
                 monthly_sheets.append((sheet, month, df))
@@ -423,7 +461,9 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                 month_frame[sheet_column] = sheet
                 combined.append(month_frame)
             combined_table = pd.concat(combined, ignore_index=True)
-            result[f"{Path(filepath).stem}__monthly_combined"] = combined_table
+            result[f"{stem}__monthly_combined"] = combined_table
+            if raw_stem != stem:
+                result[f"{raw_stem}__monthly_combined"] = combined_table
             logger.info(
                 "Combined %d compatible monthly sheets from %s: %d rows",
                 len(combined),

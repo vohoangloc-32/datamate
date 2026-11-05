@@ -439,6 +439,7 @@ class DataMatePipeline:
                 answer=format_answer(
                     value=exec_result.result,
                     answer_type=exec_result.answer_type,
+                    question=question,
                 ),
                 question_info=q_info,
                 execution_retries=retries,
