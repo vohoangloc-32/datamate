@@ -8,3 +8,5 @@ result/
 node_modules/
 log.txt
 context_*/
+results_*/
+results*.zip
