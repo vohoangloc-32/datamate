@@ -307,7 +307,13 @@ class PromptBuilder:
                 if question_info.time_expressions:
                     sections.append("Time ranges:")
                     for expr, start, end in question_info.time_expressions:
-                        sections.append(f"  - '{expr}' → {start} to {end}")
+                        import datetime as _dt
+                        end_d = _dt.date.fromisoformat(str(end)[:10]) if not isinstance(end, _dt.date) else end
+                        next_day = end_d + _dt.timedelta(days=1)
+                        sections.append(
+                            f"  - '{expr}' → {start} to {end} (inclusive) | "
+                            f"For timestamp columns use: >= pd.Timestamp('{start}') and < pd.Timestamp('{next_day}')"
+                        )
                 if question_info.is_comparison:
                     sections.append("This is a comparison question.")
 

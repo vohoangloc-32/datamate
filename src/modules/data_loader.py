@@ -197,7 +197,7 @@ def _fill_merged_order_metadata(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
-    """Parse date-like columns, including Excel serial-day values."""
+    """Parse date-like columns, including mixed Excel serial-day and text dates."""
     if pd.api.types.is_datetime64_any_dtype(values):
         return values
 
@@ -205,37 +205,64 @@ def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
     if non_null.empty:
         return None
 
+    # If all non-null values are numeric outside Excel serial range (e.g. integer years 2024, 2025), keep as numeric
     numeric = pd.to_numeric(values, errors="coerce")
     valid_numeric = numeric.dropna()
-    if not valid_numeric.empty:
-        if valid_numeric.between(20000, 80000).all():
-            parsed_excel_dates = pd.to_datetime(
-                numeric,
-                unit="D",
-                origin="1899-12-30",
-                errors="coerce",
-            )
-            if parsed_excel_dates.notna().any():
-                return parsed_excel_dates
-        if valid_numeric.notna().sum() == len(non_null):
-            return None
+    if len(valid_numeric) == len(non_null) and not valid_numeric.between(20000, 80000).any():
+        return None
 
-    date_text = values.astype("string").str.strip()
-    date_text = date_text.str.replace(
-        r"(?i)\bth(?:áng|g)\.?\s*",
-        "",
-        regex=True,
-    )
-    parsed_dates = pd.to_datetime(date_text, errors="coerce", dayfirst=True)
-    iso_dates = date_text.str.match(r"^\d{4}-\d{1,2}-\d{1,2}(?:\b|T)", na=False)
-    if iso_dates.any():
-        parsed_dates.loc[iso_dates] = pd.to_datetime(
-            date_text.loc[iso_dates],
+    result = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
+
+    # 1. Excel serial day values (20000 to 80000, representing 1954 to 2119)
+    excel_mask = numeric.between(20000, 80000)
+    if excel_mask.any():
+        parsed_excel = pd.to_datetime(
+            numeric[excel_mask],
+            unit="D",
+            origin="1899-12-30",
             errors="coerce",
-            yearfirst=True,
         )
-    if parsed_dates.notna().any():
-        return parsed_dates
+        result.loc[excel_mask] = parsed_excel
+
+    # 2. Text dates for elements not parsed as Excel serial
+    remaining_mask = values.notna() & ~excel_mask
+    if remaining_mask.any():
+        date_text = values[remaining_mask].astype("string").str.strip()
+        # Exclude bare 4-digit years like "2024"
+        is_bare_year = date_text.str.match(r"^\d{4}$", na=False)
+        date_text_to_parse = date_text[~is_bare_year]
+        if not date_text_to_parse.empty:
+            date_text_to_parse = date_text_to_parse.str.replace(
+                r"(?i)\bth(?:áng|g)\.?\s*",
+                "/",
+                regex=True,
+            )
+            date_text_to_parse = date_text_to_parse.str.replace(r"\s+", "/", regex=True)
+            date_text_to_parse = date_text_to_parse.str.replace(r"/+", "/", regex=True)
+
+            parsed_text = pd.to_datetime(
+                date_text_to_parse,
+                errors="coerce",
+                dayfirst=True,
+                format="mixed",
+            )
+            iso_dates = date_text_to_parse.str.match(r"^\d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}(?:\b|T)", na=False)
+            if iso_dates.any():
+                parsed_iso = pd.to_datetime(
+                    date_text_to_parse.loc[iso_dates],
+                    errors="coerce",
+                    yearfirst=True,
+                    format="mixed",
+                )
+                parsed_text.loc[iso_dates] = parsed_iso
+
+            result.loc[date_text_to_parse.index] = parsed_text
+
+    valid_dates = result.dropna()
+    if len(valid_dates) >= 0.5 * len(non_null):
+        years = valid_dates.dt.year
+        if (years >= 2000).mean() >= 0.75 and (years <= 2050).mean() >= 0.75:
+            return result
     return None
 
 
@@ -298,6 +325,32 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
                     full_parsed = df[col].map(parse_vietnamese_currency_str)
                     df[col] = pd.to_numeric(full_parsed, errors="coerce")
                     continue
+
+            # 2c. Try Quantity with unit string parsing (e.g. '1 chai', '2 ly', '10 hop')
+            compact_c = _compact_col_name(col)
+            if any(t in compact_c for t in ("soluong", "sl", "qty", "quantity")) and not any(t in compact_c for t in ("ma", "id", "ten")):
+                _qty_re = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s+[a-zA-ZÀ-ỹ]+\s*$")
+                sample_qty = non_null.head(30).astype(str)
+                if any(_qty_re.match(v) for v in sample_qty):
+                    def _extract_qty(val: object) -> object:
+                        if isinstance(val, (int, float)):
+                            return val
+                        s_v = str(val).strip()
+                        m_q = _qty_re.match(s_v)
+                        if m_q:
+                            num_str = m_q.group(1).replace(",", ".")
+                            try:
+                                return float(num_str) if "." in num_str else int(num_str)
+                            except Exception:
+                                return val
+                        return val
+
+                    extracted_sample = non_null.map(_extract_qty)
+                    numeric_qty = pd.to_numeric(extracted_sample, errors="coerce")
+                    if numeric_qty.notna().sum() > 0.7 * len(non_null):
+                        full_extracted = df[col].map(_extract_qty)
+                        df[col] = pd.to_numeric(full_extracted, errors="coerce")
+                        continue
 
             # 3. Try datetime only if sample strings contain date separators and years are plausible
             sample_str = " ".join(non_null.head(5).astype(str))
@@ -536,6 +589,32 @@ def _load_sqlite(filepath: str) -> Dict[str, pd.DataFrame]:
 _cache: Dict[str, Dict[str, pd.DataFrame]] = {}
 
 
+def _combine_split_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """Combine compatible split tables (e.g. _1 + _2 or _2025 + _2026 or monthly combined from split files)."""
+    groups: Dict[Tuple[str, bool], List[Tuple[str, pd.DataFrame]]] = {}
+    for name, df in list(tables.items()):
+        m = re.match(r"^(.+?)_([0-9]{1,2}|20[0-9]{2})(?:__(monthly_combined.*))?$", name)
+        if m:
+            base_prefix = m.group(1)
+            is_monthly = bool(m.group(3))
+            key = (base_prefix, is_monthly)
+            groups.setdefault(key, []).append((name, df))
+
+    for (base_prefix, is_monthly), table_list in groups.items():
+        if len(table_list) > 1:
+            col0 = [c for c in table_list[0][1].columns if not str(c).startswith("__source_")]
+            if all([c for c in t[1].columns if not str(c).startswith("__source_")] == col0 for t in table_list[1:]):
+                combined_df = pd.concat([t[1] for t in table_list], ignore_index=True)
+                if is_monthly:
+                    comb_name = f"{base_prefix}__monthly_combined"
+                else:
+                    comb_name = f"{base_prefix}__combined"
+                tables[comb_name] = combined_df
+                if base_prefix not in tables:
+                    tables[base_prefix] = combined_df
+    return tables
+
+
 def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, pd.DataFrame]:
     """
     Load all data files from a business directory.
@@ -583,6 +662,8 @@ def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, p
 
     if not tables:
         logger.warning("No data tables loaded from %s", business_dir)
+    else:
+        tables = _combine_split_tables(tables)
 
     if use_cache:
         _cache[business_dir] = tables

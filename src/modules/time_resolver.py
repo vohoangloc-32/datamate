@@ -186,13 +186,20 @@ class TimeResolver:
 
         # --- Exact date patterns ---
         # "hôm nay"
-        if expr in ("hôm nay", "ngày hôm nay", "today"):
+        if expr in ("hôm nay", "ngày hôm nay", "today", "hnay"):
             return (as_of, as_of)
 
         # "hôm qua"
-        if expr in ("hôm qua", "ngày hôm qua"):
+        if expr in ("hôm qua", "ngày hôm qua", "hqua", "bữa qua", "bua qua"):
             yesterday = as_of - timedelta(days=1)
             return (yesterday, yesterday)
+
+        # --- Year-to-date and Month-to-date patterns ---
+        if re.search(r"từ\s+đầu\s+năm", expr):
+            return (date(as_of.year, 1, 1), as_of)
+
+        if re.search(r"từ\s+đầu\s+tháng", expr):
+            return (date(as_of.year, as_of.month, 1), as_of)
 
         # --- Week patterns ---
         if re.search(r"tuần\s*(này|nay)", expr):
@@ -204,7 +211,28 @@ class TimeResolver:
             prev_sunday = prev_monday + timedelta(days=6)
             return (prev_monday, prev_sunday)
 
+        # --- "cùng kỳ" (Same period) ---
+        # Rulebook §2: "cùng kỳ tháng trước" = from 1st to same day min(as_of.day, last_day_prev)
+        if re.search(r"cùng\s*kỳ\s*tháng\s*(trước|rồi)", expr):
+            prev_y = as_of.year if as_of.month > 1 else as_of.year - 1
+            prev_m = as_of.month - 1 if as_of.month > 1 else 12
+            first_prev, last_prev = _month_range(prev_y, prev_m, as_of)
+            cap_day = min(as_of.day, last_prev.day)
+            return (first_prev, date(prev_y, prev_m, cap_day))
+
+        # "cùng kỳ năm ngoái" = same month, last year
+        if re.search(r"cùng\s*kỳ\s*(năm\s*)?(ngoái|trước|rồi)", expr):
+            return _month_range(as_of.year - 1, as_of.month, as_of)
+
         # --- Month patterns ---
+        # Explicit month and year: "tháng M/YYYY" or "tháng M năm YYYY"
+        m_my = re.search(r"tháng\s+(\d{1,2})\s*(?:[/\-]|năm\s*)(\d{4})", expr)
+        if m_my:
+            m_num = int(m_my.group(1))
+            y_num = int(m_my.group(2))
+            if 1 <= m_num <= 12:
+                return _month_range(y_num, m_num, as_of)
+
         if re.search(r"tháng\s*(này|nay)", expr):
             return _month_range(as_of.year, as_of.month, as_of)
 
@@ -226,6 +254,14 @@ class TimeResolver:
                 return _month_range(as_of.year, num, as_of)
 
         # --- Quarter patterns ---
+        # Explicit quarter and year: "quý Q/YYYY" or "quý Q năm YYYY"
+        m_qy = re.search(r"quý\s+(\d)\s*(?:[/\-]|năm\s*)(\d{4})", expr)
+        if m_qy:
+            q_num = int(m_qy.group(1))
+            y_num = int(m_qy.group(2))
+            if 1 <= q_num <= 4:
+                return _quarter_range(y_num, q_num, as_of)
+
         m = re.match(r"quý\s+(\d)", expr)
         if m:
             q = int(m.group(1))
@@ -242,12 +278,6 @@ class TimeResolver:
                 return _quarter_range(as_of.year - 1, 4, as_of)
             else:
                 return _quarter_range(as_of.year, q - 1, as_of)
-
-        # --- "cùng kỳ năm ngoái" = same period last year ---
-        # (Must be checked before generic "năm ngoái" pattern)
-        if re.search(r"cùng\s*kỳ\s*(năm\s*)?(ngoái|trước|rồi)", expr):
-            # Same month, last year
-            return _month_range(as_of.year - 1, as_of.month, as_of)
 
         # --- Year patterns ---
         if re.search(r"năm\s*(nay|này)", expr):
@@ -317,12 +347,13 @@ class TimeResolver:
         """
         results = []
         patterns = [
-            r"(tháng\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua|\d{1,2}|\w+))",
+            r"(tháng\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua|\d{1,2}(?:\s*(?:[/\-]|năm\s*)\d{4})?|\w+))",
             r"(tuần\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua))",
-            r"(quý\s+(?:này|nay|rồi|trước|qua|\d))",
-            r"(cùng\s*kỳ\s*(?:năm\s*)?(?:ngoái|trước|rồi))",
+            r"(quý\s+(?:này|nay|rồi|trước|qua|\d(?:\s*(?:[/\-]|năm\s*)\d{4})?))",
+            r"(cùng\s*kỳ\s*(?:tháng|năm)?\s*(?:ngoái|trước|rồi)?)",
+            r"(từ\s+đầu\s+(?:năm|tháng)(?:\s+(?:này|nay))?(?:\s+đến\s+hết\s+(?:hôm\s+nay|hnay))?)",
             r"(năm\s+(?:nay|này|rồi|trước|ngoái|qua|\d{4}))",
-            r"(hôm\s+(?:nay|qua))",
+            r"(hôm\s+(?:nay|qua)|bữa\s+qua|bua\s+qua|hqua|hnay)",
             r"(tết)",
             r"(\d+\s*ngày\s*(?:trước|qua))",
         ]

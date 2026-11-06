@@ -36,6 +36,45 @@ def _pattern_matches(pattern: str, question: str) -> bool:
     ) is not None
 
 
+_SLANG_REPLACEMENTS = [
+    # Common telex typo patterns
+    (re.compile(r"\bsoos\b", re.IGNORECASE), "số"),
+    (re.compile(r"\bees\b", re.IGNORECASE), "ế"),
+    (re.compile(r"\bheets\b", re.IGNORECASE), "hết"),
+    (re.compile(r"\bnowj\b", re.IGNORECASE), "nợ"),
+    (re.compile(r"\bddeens\b", re.IGNORECASE), "đến"),
+    (re.compile(r"\bgaanf\b", re.IGNORECASE), "gần"),
+    (re.compile(r"\bhangf\b", re.IGNORECASE), "hàng"),
+    (re.compile(r"\bcuwar\b", re.IGNORECASE), "cửa"),
+    (re.compile(r"\bddos\b", re.IGNORECASE), "đó"),
+    (re.compile(r"\bcuar\b", re.IGNORECASE), "của"),
+    (re.compile(r"\bbans\b", re.IGNORECASE), "bán"),
+    (re.compile(r"\bcos\b", re.IGNORECASE), "có"),
+    (re.compile(r"\bconf\b", re.IGNORECASE), "còn"),
+    (re.compile(r"\bduocj\b", re.IGNORECASE), "được"),
+    (re.compile(r"\b(dc|đc)\b", re.IGNORECASE), "được"),
+    # Time slang
+    (re.compile(r"\bhqua\b", re.IGNORECASE), "hôm qua"),
+    (re.compile(r"\b(?:bua|bữa)\s+qua\b", re.IGNORECASE), "hôm qua"),
+    (re.compile(r"\bhnay\b", re.IGNORECASE), "hôm nay"),
+    (re.compile(r"\bthg\b", re.IGNORECASE), "tháng"),
+    (re.compile(r"\bth\b(?=\s+\d|\s+này|\s+nay|\s+trước|\s+sau)", re.IGNORECASE), "tháng"),
+    # Common question words
+    (re.compile(r"\b(?:bnhiu|bn)\b", re.IGNORECASE), "bao nhiêu"),
+    (re.compile(r"\bdthu\b", re.IGNORECASE), "doanh thu"),
+]
+
+
+def normalize_question_slang(question: str) -> str:
+    """Normalize common Vietnamese slang, contractions, and Telex typos in questions."""
+    if not question:
+        return question
+    res = question
+    for pattern, repl in _SLANG_REPLACEMENTS:
+        res = pattern.sub(repl, res)
+    return res
+
+
 # ---------------------------------------------------------------------------
 # Answer type classification
 # ---------------------------------------------------------------------------
@@ -203,15 +242,16 @@ class QuestionAnalyzer:
         QuestionInfo
             Structured analysis of the question.
         """
+        norm_q = normalize_question_slang(question)
         info = QuestionInfo(original=question)
-        q_lower = question.lower().strip()
+        q_lower = norm_q.lower().strip()
 
         # 1. Classify expected answer type
         info.expected_type, info.confidence = self._classify_type(q_lower)
 
         # 2. Extract time expressions
         info.time_expressions = self.time_resolver.extract_and_resolve(
-            question, as_of_date
+            norm_q, as_of_date
         )
 
         # 3. Detect aggregation

@@ -328,3 +328,54 @@ def test_vietnamese_currency_parsing():
     assert parse_vietnamese_currency_str("720.000đ") == 720000
     assert parse_vietnamese_currency_str("9tr960") == 9960000
     assert parse_vietnamese_currency_str("50.000đ") == 50000
+
+
+def test_fix_date_boundaries():
+    from src.modules.accounting_cleaner import _fix_date_boundaries
+
+    code1 = "df[df['Ngày'] <= pd.Timestamp('2025-10-31')]"
+    fixed1 = _fix_date_boundaries(code1)
+    assert "< (pd.Timestamp('2025-10-31') + pd.Timedelta(days=1))" in fixed1
+
+    code2 = "df[df['Ngày'] <= '2025-05-15']"
+    fixed2 = _fix_date_boundaries(code2)
+    assert "< (pd.Timestamp('2025-05-15') + pd.Timedelta(days=1))" in fixed2
+
+    # Month end with '<' (e.g. Oct 31)
+    code3 = "df[df['Ngày'] < pd.Timestamp('2025-10-31')]"
+    fixed3 = _fix_date_boundaries(code3)
+    assert "< (pd.Timestamp('2025-10-31') + pd.Timedelta(days=1))" in fixed3
+
+    # Start of next month (e.g. Nov 01) should NOT be modified
+    code4 = "df[df['Ngày'] < pd.Timestamp('2025-11-01')]"
+    fixed4 = _fix_date_boundaries(code4)
+    assert fixed4 == code4
+
+
+def test_patch_multiline_order_deduplication_and_fan_out():
+    # Setup tables
+    df_header = pd.DataFrame({
+        "Mã đơn": ["ORD1", "ORD2"],
+        "Tổng tiền hàng": [100000, 200000],
+        "Trạng thái": ["Hoàn thành", "Đã hủy"]
+    })
+    df_detail = pd.DataFrame({
+        "Mã đơn": ["ORD1", "ORD1", "ORD2", "ORD2"],
+        "Thành tiền": [40000, 60000, 100000, 100000]
+    })
+    tables = {"don_hang": df_header, "chi_tiet": df_detail}
+
+    # Test order count on multiline detail table
+    code_count = "result = len(chi_tiet)"
+    patched, _ = patch_code_and_tables_for_rulebook(code_count, "Có bao nhiêu đơn hàng?", tables)
+    assert "chi_tiet['Mã đơn'].nunique()" in patched
+
+    # Test AOV rewrite .mean() -> .sum() on item level grouping
+    code_aov = "result = chi_tiet.groupby('Mã đơn')['Thành tiền'].mean().mean()"
+    patched_aov, _ = patch_code_and_tables_for_rulebook(code_aov, "Giá trị trung bình mỗi đơn?", tables)
+    assert ".groupby('Mã đơn')['Thành tiền'].sum()" in patched_aov
+
+    # Test Fan-out Guard on merge
+    code_merge = "merged = pd.merge(don_hang, chi_tiet, on='Mã đơn')\nresult = merged['Tổng tiền hàng'].sum()"
+    patched_merge, _ = patch_code_and_tables_for_rulebook(code_merge, "Tổng doanh thu?", tables)
+    assert "merged['Thành tiền'].sum()" in patched_merge

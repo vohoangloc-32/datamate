@@ -294,6 +294,10 @@ class RetryEngine:
                 include_dtypes=False,
                 include_values=True,
             )
+            if "KeyError" in error_message:
+                key_hint = self._key_error_hint(tables, error_message)
+                if key_hint:
+                    context = key_hint + "\n" + context
             if any(marker in error_message for marker in (
                 "FileNotFoundError",
                 "FileAccessError",
@@ -440,6 +444,58 @@ class RetryEngine:
             "(suggestions; verify before using):\n- "
             + "\n- ".join(suggestions[:5])
         )
+
+    @staticmethod
+    def _key_error_hint(
+        tables: Dict[str, pd.DataFrame],
+        error_message: str,
+    ) -> Optional[str]:
+        """Propose closest existing column names when code fails with KeyError."""
+        key_match = re.search(r"KeyError:\s*['\"]([^'\"]+)['\"]", error_message)
+        if not key_match:
+            return None
+        missing_key = key_match.group(1).strip()
+        if not missing_key:
+            return None
+
+        def normalize(v: str) -> str:
+            text = unicodedata.normalize("NFKD", str(v).casefold())
+            text = "".join(c for c in text if not unicodedata.combining(c)).replace("đ", "d")
+            return re.sub(r"[^a-z0-9]+", "", text)
+
+        norm_missing = normalize(missing_key)
+        all_cols = []
+        for tname, df in tables.items():
+            for col in df.columns:
+                if not str(col).startswith("__"):
+                    all_cols.append((str(col), tname))
+
+        # Check exact normalized match (case/space/accent-insensitive)
+        matches = []
+        seen = set()
+        for col_name, tname in all_cols:
+            if normalize(col_name) == norm_missing and col_name not in seen:
+                matches.append(f"`{col_name}` (in `{tname}`)")
+                seen.add(col_name)
+
+        # Fallback to difflib
+        if not matches:
+            unique_cols = list(dict.fromkeys(c for c, _ in all_cols))
+            close = difflib.get_close_matches(missing_key, unique_cols, n=3, cutoff=0.5)
+            for c in close:
+                if c not in seen:
+                    for col_name, tname in all_cols:
+                        if col_name == c:
+                            matches.append(f"`{c}` (in `{tname}`)")
+                            seen.add(c)
+                            break
+
+        if matches:
+            return (
+                f"KEYERROR HINT: Column {missing_key!r} does not exist. "
+                f"Did you mean: {', '.join(matches[:3])}? Use the exact column name."
+            )
+        return None
 
     @staticmethod
     def _schema_context(

@@ -149,3 +149,29 @@ def test_extract_and_resolve(as_of_date):
     assert any("tháng này" in e for e in expressions)
     assert any("tuần rồi" in e for e in expressions)
     assert any("năm ngoái" in e for e in expressions)
+
+
+def test_resolve_explicit_month_and_quarter_with_year():
+    resolver = TimeResolver()
+    as_of = date(2026, 6, 15)
+    # Explicit month with past year
+    assert resolver.resolve("tháng 8/2025", as_of) == (date(2025, 8, 1), date(2025, 8, 31))
+    assert resolver.resolve("tháng 12 năm 2025", as_of) == (date(2025, 12, 1), date(2025, 12, 31))
+    # Explicit quarter with past year
+    assert resolver.resolve("quý 3 năm 2025", as_of) == (date(2025, 7, 1), date(2025, 9, 30))
+    # Slang yesterday
+    assert resolver.resolve("hqua", as_of) == (date(2026, 6, 14), date(2026, 6, 14))
+    assert resolver.resolve("bữa qua", as_of) == (date(2026, 6, 14), date(2026, 6, 14))
+    # YTD
+    assert resolver.resolve("từ đầu năm", as_of) == (date(2026, 1, 1), as_of)
+    # Same period last month
+    assert resolver.resolve("cùng kỳ tháng trước", as_of) == (date(2026, 5, 1), date(2026, 5, 15))
+
+
+def test_extract_and_resolve_with_explicit_years():
+    resolver = TimeResolver()
+    as_of = date(2026, 6, 15)
+    extracted = resolver.extract_and_resolve("Tháng 8/2025 cửa hàng bán được bao nhiêu tiền?", as_of)
+    assert len(extracted) == 1
+    assert extracted[0][1] == date(2025, 8, 1)
+    assert extracted[0][2] == date(2025, 8, 31)

@@ -256,3 +256,32 @@ def test_distinct_retries_continue_after_first_failure():
     assert len(prompts) == 3
     assert "AVAILABLE VARIABLES AND COLUMNS" in prompts[1]
     assert "amount" in prompts[2]
+
+
+def test_key_error_retry_suggests_closest_column():
+    engine = RetryEngine(
+        code_executor=CodeExecutor(),
+        prompt_builder=PromptBuilder(few_shot_examples=[]),
+        llm_generate_fn=lambda prompt: "",
+    )
+    tables = {
+        "orders": pd.DataFrame({"Tổng tiền hàng": [1000], "Mã đơn hàng": ["ORD01"]})
+    }
+
+    # Normalized match (e.g. TongTienHang -> Tổng tiền hàng)
+    context = engine._available_context(
+        tables,
+        "KeyError: 'TongTienHang'",
+    )
+    assert context is not None
+    assert "KEYERROR HINT" in context
+    assert "Tổng tiền hàng" in context
+
+    # Close match with difflib
+    context_close = engine._available_context(
+        tables,
+        "KeyError: 'Mã đơn'",
+    )
+    assert context_close is not None
+    assert "KEYERROR HINT" in context_close
+    assert "Mã đơn hàng" in context_close

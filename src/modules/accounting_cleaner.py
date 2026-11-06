@@ -17,6 +17,7 @@ Implements:
    'Tổng sau giảm giá') and Rulebook §3 average-order-value VND rounding.
 """
 
+import calendar
 import re
 import unicodedata
 from decimal import Decimal, ROUND_HALF_UP
@@ -412,6 +413,57 @@ _REDUNDANT_STATUS_COLS_PATTERN = (
 )
 
 
+def _fix_date_boundaries(code: str) -> str:
+    """
+    Ensure date range comparisons don't inadvertently cut off timestamps within the boundary day.
+    1. Rewrite `<= pd.Timestamp('YYYY-MM-DD')` to `< (pd.Timestamp('YYYY-MM-DD') + pd.Timedelta(days=1))`
+    2. Rewrite `< pd.Timestamp('YYYY-MM-last_day')` (month-end) to `< (pd.Timestamp('YYYY-MM-last_day') + pd.Timedelta(days=1))`
+    """
+    if not code:
+        return code
+
+    def replace_lte(match: re.Match) -> str:
+        date_str = match.group(1)
+        return f"< (pd.Timestamp('{date_str}') + pd.Timedelta(days=1))"
+
+    # Matches <= pd.Timestamp('YYYY-MM-DD') or <= pd.to_datetime('YYYY-MM-DD')
+    res = re.sub(
+        r"<=\s*(?:pd\.Timestamp|pd\.to_datetime)\(['\"](\d{4}-\d{2}-\d{2})['\"]\)",
+        replace_lte,
+        code,
+    )
+    # Matches <= 'YYYY-MM-DD' when preceded by a comparison operator context
+    res = re.sub(
+        r"(?<=[^\w])<=\s*['\"](\d{4}-\d{2}-\d{2})['\"]",
+        replace_lte,
+        res,
+    )
+
+    def replace_lt_month_end(match: re.Match) -> str:
+        date_str = match.group(1)
+        parts = date_str.split("-")
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+        try:
+            _, last_day = calendar.monthrange(y, m)
+            if d == last_day:
+                return f"< (pd.Timestamp('{date_str}') + pd.Timedelta(days=1))"
+        except Exception:
+            pass
+        return match.group(0)
+
+    res = re.sub(
+        r"<\s*(?:pd\.Timestamp|pd\.to_datetime)\(['\"](\d{4}-\d{2}-(?:28|29|30|31))['\"]\)",
+        replace_lt_month_end,
+        res,
+    )
+    res = re.sub(
+        r"(?<=[^\w])<\s*['\"](\d{4}-\d{2}-(?:28|29|30|31))['\"]",
+        replace_lt_month_end,
+        res,
+    )
+    return res
+
+
 def patch_code_and_tables_for_rulebook(
     code: str,
     question: str,
@@ -475,21 +527,58 @@ def patch_code_and_tables_for_rulebook(
                             f'"{cv}"', '"__CANCEL__"'
                         )
 
-        # If question asks to count orders or calculate order cancellation rate (Rulebook §1),
-        # ensure .shape[0] on cancelled rows deduplicates by order ID for multi-line order tables.
-        is_order_counting = any(
-            k in qtext for k in ("dem so don", "may don", "bao nhieu don", "ti le don", "ti le huy", "% don", "so don")
-        )
-        if is_order_counting:
-            for tname, df in exec_tables.items():
-                oid = find_order_id_column(df)
-                if oid is not None and df[oid].duplicated().any():
-                    # Rewrite .shape[0] on order-level calculations
-                    patched = re.sub(
-                        rf"(\[[^\]]*__CANCEL__[^\]]*\])\.shape\[0\]",
-                        rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
-                        patched,
-                    )
+    # Multi-line order deduplication for order count & cancellation rate
+    is_order_counting = any(
+        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "ti le", "ty le", "% don", "so don")
+    )
+    if is_order_counting:
+        for tname, df in exec_tables.items():
+            oid = find_order_id_column(df)
+            if oid is not None and df[oid].duplicated().any():
+                # Rewrite .shape[0] on filtered order calculations
+                patched = re.sub(
+                    rf"(\[[^\]]*__CANCEL__[^\]]*\])\.shape\[0\]",
+                    rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
+                    patched,
+                )
+                # Rewrite df.shape[0] or len(df) on order tables that have multi-line items
+                patched = re.sub(
+                    rf"\b{tname}\.shape\[0\]",
+                    f"{tname}['{oid}'].nunique()",
+                    patched,
+                )
+                patched = re.sub(
+                    rf"len\(\s*{tname}\s*\)",
+                    f"{tname}['{oid}'].nunique()",
+                    patched,
+                )
+
+    # Average Order Value (AOV) on multi-line tables:
+    # Rewrite .groupby(oid)[line_item_col].mean() to .groupby(oid)[line_item_col].sum()
+    if question_is_average_order_value(question):
+        for line_col in ("Thành tiền", "Tiền bán", "Thành tiền trước giảm", "Số tiền", "ThanhTien", "thanh_tien", "TienBan"):
+            patched = re.sub(
+                rf"\.groupby\(\s*(['\"][^'\"]+['\"])\s*\)\[\s*['\"]{line_col}['\"]\s*\]\.mean\(\)",
+                rf".groupby(\1)['{line_col}'].sum()",
+                patched,
+            )
+
+    # Relational Fan-out Guard:
+    # When code merges tables and calculates .sum() on order header total columns (e.g. 'Tổng tiền hàng'),
+    # rewrite to line item total (e.g. 'Thành tiền') or deduplicate subset by order ID.
+    has_merge = bool(re.search(r"\b(?:merge|join)\b", patched))
+    if has_merge:
+        has_tong_tien = any("Tổng tiền hàng" in df.columns for df in tables.values())
+        has_thanh_tien = any("Thành tiền" in df.columns for df in tables.values())
+        if has_tong_tien and has_thanh_tien:
+            patched = re.sub(
+                r"(\w+)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
+                r"\1['Thành tiền'].sum()",
+                patched,
+            )
+
+    # Date boundary guard: <= pd.Timestamp('YYYY-MM-DD') cut off timestamps on that day
+    patched = _fix_date_boundaries(patched)
 
     if question_is_pure_revenue(question):
         has_tong_tien_hang = any(
@@ -506,6 +595,14 @@ def patch_code_and_tables_for_rulebook(
         if has_tien_hang:
             patched = patched.replace("['TongTien']", "['Tien hang']")
             patched = patched.replace('["TongTien"]', '["Tien hang"]')
+        has_tien_hang_truoc_giam = any(
+            "Tiền hàng trước giảm" in df.columns and any(c in df.columns for c in ("Tổng tiền", "TongTien", "Tổng sau giảm giá"))
+            for df in tables.values()
+        )
+        if has_tien_hang_truoc_giam:
+            for bad in ("Tổng tiền", "TongTien", "Tổng sau giảm giá"):
+                patched = patched.replace(f"['{bad}']", "['Tiền hàng trước giảm']")
+                patched = patched.replace(f'["{bad}"]', '["Tiền hàng trước giảm"]')
 
     return patched, exec_tables
 
@@ -555,9 +652,27 @@ def format_accounting_context(
                 f"- Table `{name}`: In `don_hang`, `'Phải thu'` and `'Thanh toán'` are POST-discount (net paid). Pre-discount gross revenue (Rulebook §1) is the sum of `'Tiền bán'` across item lines in `chi_tiet_don`."
             )
 
+    # Multi-line order tables and deduplication
+    has_multi_line_orders = any(
+        find_order_id_column(df) is not None and df[find_order_id_column(df)].duplicated().any()
+        for df in tables.values()
+    )
+    if has_multi_line_orders:
+        notes.append(
+            "- Order Counting & Rate: If an order table has multiple lines per order, always count unique orders (`df['Mã đơn'].nunique()`), NOT row counts (`len(df)` or `df.shape[0]`)."
+        )
+        notes.append(
+            "- Average Order Value (AOV): For tables with multiple lines per order, aggregate items per order first: `df.groupby('Mã đơn')['Thành tiền'].sum().mean()`."
+        )
+
     # General Rulebook §3 note for product ranking: service fee exclusion
     notes.append(
         "- Product Ranking (Rulebook §3): Dòng 'Phí phục vụ' không phải mặt hàng: không xếp hạng, không đếm (nhưng vẫn tính vào doanh thu)."
+    )
+
+    # Relational merge fan-out note
+    notes.append(
+        "- Merge Fan-out: When joining order header with order detail tables, do NOT sum order-level totals (like 'Tổng tiền hàng') on the merged table as it duplicates revenue; sum detail-level 'Thành tiền' instead."
     )
 
     # General Rulebook §10 note for base unit conversion

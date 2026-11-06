@@ -193,3 +193,41 @@ def test_load_xlsx_combines_compatible_monthly_sheets(tmp_path):
         "T01_2025",
         "02.2025",
     ]
+
+
+def test_coerce_quantity_with_unit_strings():
+    df = pd.DataFrame({
+        "so_luong": ["1 chai", "2 ly", "10 hop", "3", 4],
+        "ten_hang": ["7Up lon", "3M Bang keo", "Tra sua", "Ca phe", "Banh"],
+    })
+    coerced = _coerce_types(df)
+    assert pd.api.types.is_numeric_dtype(coerced["so_luong"])
+    assert coerced["so_luong"].tolist() == [1.0, 2.0, 10.0, 3.0, 4.0]
+    assert coerced["ten_hang"].tolist() == ["7Up lon", "3M Bang keo", "Tra sua", "Ca phe", "Banh"]
+
+
+def test_coerce_mixed_serial_and_text_dates():
+    df = pd.DataFrame({
+        "ngay_ban": [45658, "1 thg 1 2025", "01/01/2025", "15/08/2026", None],
+    })
+    coerced = _coerce_types(df)
+    assert pd.api.types.is_datetime64_any_dtype(coerced["ngay_ban"])
+    assert coerced["ngay_ban"].iloc[0] == pd.Timestamp("2025-01-01")
+    assert coerced["ngay_ban"].iloc[1] == pd.Timestamp("2025-01-01")
+    assert coerced["ngay_ban"].iloc[2] == pd.Timestamp("2025-01-01")
+    assert coerced["ngay_ban"].iloc[3] == pd.Timestamp("2026-08-15")
+    assert pd.isna(coerced["ngay_ban"].iloc[4])
+
+
+def test_combine_split_tables_auto():
+    from src.modules.data_loader import _combine_split_tables
+    t1 = pd.DataFrame({"order_id": [1, 2], "amount": [100, 200]})
+    t2 = pd.DataFrame({"order_id": [3, 4], "amount": [300, 400]})
+    tables = {
+        "So_chi_tiet_1": t1,
+        "So_chi_tiet_2": t2,
+    }
+    res = _combine_split_tables(tables)
+    assert "So_chi_tiet__combined" in res
+    assert "So_chi_tiet" in res
+    assert len(res["So_chi_tiet__combined"]) == 4

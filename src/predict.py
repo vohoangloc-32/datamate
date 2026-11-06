@@ -28,7 +28,7 @@ from modules.schema_registry import SchemaRegistry
 from modules.readme_parser import parse_readme
 from modules.rulebook_interpreter import parse_rulebook
 from modules.time_resolver import LunarCalendar
-from modules.question_understanding import QuestionAnalyzer
+from modules.question_understanding import QuestionAnalyzer, normalize_question_slang
 from modules.prompt_builder import PromptBuilder
 from modules.code_executor import CodeExecutor
 from modules.analysis_plan import (
@@ -328,6 +328,7 @@ class DataMatePipeline:
         q_id = question_record["id"]
         biz_id = question_record["business_id"]
         question = question_record["question"]
+        clean_question = normalize_question_slang(question)
         as_of_date = question_record["as_of_date"]
 
         self.question_logger.start_question(q_id)
@@ -336,15 +337,15 @@ class DataMatePipeline:
             # 1. Load business data and apply Rulebook metric-aware filtering
             self._load_business(biz_id)
             raw_tables = self._data_cache[biz_id]
-            tables = prepare_tables_for_question(raw_tables, question)
+            tables = prepare_tables_for_question(raw_tables, clean_question)
             schema = self._schema_cache[biz_id]
             readme = self._readme_cache[biz_id]
             grounder = self._grounder_cache.get(biz_id)
             grounded_parts = [
                 part
                 for part in (
-                    grounder.format_grounded_context(question) if grounder else None,
-                    format_accounting_context(raw_tables, question),
+                    grounder.format_grounded_context(clean_question) if grounder else None,
+                    format_accounting_context(raw_tables, clean_question),
                 )
                 if part
             ]
@@ -356,14 +357,14 @@ class DataMatePipeline:
 
             # 2. Analyze question
             as_of = date.fromisoformat(as_of_date)
-            q_info = self.question_analyzer.analyze(question, as_of)
+            q_info = self.question_analyzer.analyze(clean_question, as_of)
 
             # 3. Build prompt
             table_vars = self.code_executor.get_table_var_mapping(tables)
             head_rows = self.code_executor.get_head_rows(tables, n=3)
 
             prompt_options = dict(
-                question=question,
+                question=clean_question,
                 as_of_date=as_of_date,
                 schema=schema,
                 readme_context=readme,
@@ -444,6 +445,8 @@ class DataMatePipeline:
                 question_info=q_info,
                 execution_retries=retries,
                 question=question,
+                code=exec_result.code or "",
+                tables=tables,
             )
 
             # 7. Log

@@ -6,9 +6,15 @@ implements heuristics to decide when to abstain rather than risk
 a wrong answer.
 """
 
+import ast
 import logging
 import math
-from typing import Any, Dict, Optional
+import re
+import unicodedata
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import pandas as pd
+
 from .accounting_cleaner import normalize_text
 from .question_understanding import QuestionInfo
 
@@ -45,20 +51,48 @@ class ConfidenceGate:
         max_retries: int = 3,
         second_answer: Optional[Dict[str, Any]] = None,
         question: str = "",
+        code: str = "",
+        tables: Optional[Dict[str, pd.DataFrame]] = None,
     ) -> Dict[str, Any]:
         """
-        Evaluate whether to submit the answer or abstain.
+        Evaluate whether to submit the answer or abstain using a 3-layer audit:
+        1. Schema Answerability Audit (detect unrecorded entities like gender, cancel reason).
+        2. Static AST Code Audit (missing temporal filter, unauthorized unit division, count vs sum).
+        3. Domain Plausibility Gate & Calibrated Confidence Scoring.
         """
         # Already abstain or unanswerable — pass through
         if answer.get("type") in ("abstain", "unanswerable"):
             return answer
 
+        # --- Layer 1: Schema Answerability Audit ---
+        if question and tables:
+            unanswerable_reason = self._audit_schema_answerability(question, tables)
+            if unanswerable_reason:
+                logger.info("Schema Answerability Gate: %s", unanswerable_reason)
+                return {
+                    "type": "unanswerable",
+                    "reason": unanswerable_reason,
+                }
+
         confidence = 1.0
         reasons = []
 
-        # 1. Penalty for retries (more retries = less confidence)
+        # --- Layer 2: Static AST Code Audit ---
+        if code:
+            ast_penalties = self._audit_code_ast(code, question, question_info)
+            for penalty, reason in ast_penalties:
+                confidence -= penalty
+                reasons.append(reason)
+
+        # --- Layer 3: Domain Plausibility Gate ---
+        domain_penalties = self._check_domain_plausibility(answer, question, question_info)
+        for penalty, reason in domain_penalties:
+            confidence -= penalty
+            reasons.append(reason)
+
+        # 1. Calibrated penalty for retries (each retry indicates flaky code)
         if execution_retries > 0:
-            retry_penalty = 0.35 * execution_retries
+            retry_penalty = 0.25 * execution_retries
             confidence -= retry_penalty
             reasons.append(f"retries={execution_retries}")
 
@@ -67,7 +101,7 @@ class ConfidenceGate:
             confidence -= 0.2
             reasons.append(f"low_type_confidence={question_info.confidence:.2f}")
 
-        # 3. Check for implausible values
+        # 3. Check for general implausible values (NaN, Inf, extreme size)
         implausible = self._check_plausibility(answer)
         if implausible:
             confidence -= 0.35
@@ -81,7 +115,7 @@ class ConfidenceGate:
                 num_val = float(val)
                 if num_val == 0.0:
                     if execution_retries > 0:
-                        confidence -= 0.35
+                        confidence -= 0.40
                         reasons.append("zero_numeric_after_retry")
                     elif question_info and question_info.aggregation in ("sum", "mean"):
                         confidence -= 0.25
@@ -145,6 +179,149 @@ class ConfidenceGate:
 
         logger.debug("Accepting answer (confidence=%.2f)", confidence)
         return answer
+
+    def _audit_schema_answerability(
+        self,
+        question: str,
+        tables: Dict[str, pd.DataFrame],
+    ) -> Optional[str]:
+        """Detect questions asking for entities not recorded anywhere in the business schema."""
+        q_norm = normalize_text(question)
+        all_cols: Set[str] = set()
+        table_names: Set[str] = set()
+        for tname, df in tables.items():
+            table_names.add(normalize_text(tname))
+            for col in df.columns:
+                if not str(col).startswith("__"):
+                    all_cols.add(normalize_text(col))
+
+        # 1. Customer gender
+        if any(term in q_norm for term in ("gioi tinh", "khach nam", "khach nu", "khach hang nam", "khach hang nu")):
+            if not any(any(k in col for k in ("gioi tinh", "gender", "sex", "phai")) for col in all_cols):
+                return "customer_gender_not_in_schema"
+
+        # 2. Specific cancel/return reasons
+        if any(term in q_norm for term in ("ly do huy", "li do huy", "vi sao huy", "tai sao huy", "nguyen nhan huy", "vi giao tre", "vi het hang", "ly do tra", "nguyen nhan tra")):
+            if not any(any(k in col for k in ("ly do", "reason", "nguyen nhan", "ghi chu")) for col in all_cols):
+                return "cancel_reason_not_in_schema"
+
+        # 3. Customer age / birth year
+        if any(term in q_norm for term in ("do tuoi", "bao nhieu tuoi", "nam sinh", "ngay sinh")):
+            if not any(any(k in col for k in ("tuoi", "age", "nam sinh", "ngay sinh", "birth")) for col in all_cols):
+                return "customer_age_not_in_schema"
+
+        # 4. Import / Purchasing when no import table exists
+        if any(term in q_norm for term in ("nhap hang", "nhap kho", "tien nhap", "phieu nhap", "chi phi nhap")):
+            if not any("nhap" in t or "import" in t or "purchase" in t for t in table_names):
+                return "import_table_not_in_schema"
+
+        # 5. Profit / Margin when no cost column exists
+        if any(term in q_norm for term in ("loi nhuan", "tien lai", "ty suat loi nhuan", "ti suat loi nhuan")):
+            if not any(any(k in col for k in ("gia von", "giavon", "cost", "von", "loi nhuan")) for col in all_cols):
+                return "cost_data_not_in_schema"
+
+        return None
+
+    def _audit_code_ast(
+        self,
+        code: str,
+        question: str,
+        question_info: Optional[QuestionInfo],
+    ) -> List[Tuple[float, str]]:
+        """Inspect generated code AST for logic mismatches, scale errors, and missing temporal filters."""
+        penalties: List[Tuple[float, str]] = []
+        q_norm = normalize_text(question)
+
+        # 1. Missing temporal filter on time-constrained question
+        has_time_constraint = False
+        if question_info:
+            if getattr(question_info, "time_expressions", None):
+                has_time_constraint = len(question_info.time_expressions) > 0
+            elif getattr(question_info, "time_ranges", None):
+                has_time_constraint = any(
+                    isinstance(tr, dict) and (tr.get("start") or tr.get("end"))
+                    for tr in question_info.time_ranges
+                )
+        if not has_time_constraint:
+            has_time_constraint = bool(
+                re.search(r"\b(?:thang \d+|nam \d+|quy [1-4]|ngay \d+|hom nay|hom qua|tuan nay|tuan truoc)\b", q_norm)
+            )
+
+        if has_time_constraint:
+            code_lower = code.lower()
+            time_tokens = (
+                "ngay", "date", "time", "thang", "nam", "quy",
+                "month", "year", "quarter", "day",
+                "timestamp", "to_datetime", "dt.", "between", "timedel"
+            )
+            has_time_token = any(tok in code_lower for tok in time_tokens) or bool(
+                re.search(r"['\"](?:202[4-6](?:-\d{2})?)['\"]", code)
+            )
+            if not has_time_token:
+                penalties.append((0.60, "missing_temporal_filter_in_code"))
+
+        # 2. Unauthorized unit division (e.g. dividing by 1e9 / 1e6 when question did not ask for billions/millions)
+        if re.search(r"/\s*(?:1(?:_?000){2,3}|1e[69]|10\s*\*\*\s*[69])\b", code):
+            if not any(unit in q_norm for unit in ("ty", "trieu", "tr", "ty dong", "trieu dong")):
+                penalties.append((0.70, "unauthorized_unit_division_in_code"))
+
+        # 3. Count vs Sum mismatch: question asks for money but code uses row count / shape[0] without sum
+        is_monetary = any(
+            m in q_norm for m in ("doanh thu", "bao nhieu tien", "tien hang", "tong tien", "chi phi", "phai thu", "thanh toan")
+        ) and not any(k in q_norm for k in ("ti le", "ty le", "%", "so don", "may don", "don hang"))
+        if is_monetary:
+            if re.search(r"result\s*=\s*(?:int\()?len\(|result\s*=\s*\w+\.shape\[0\]", code) and ".sum()" not in code:
+                penalties.append((0.60, "count_used_for_monetary_question"))
+
+        return penalties
+
+    def _check_domain_plausibility(
+        self,
+        answer: Dict[str, Any],
+        question: str,
+        question_info: Optional[QuestionInfo],
+    ) -> List[Tuple[float, str]]:
+        """Validate result against retail SME domain boundaries."""
+        penalties: List[Tuple[float, str]] = []
+        q_norm = normalize_text(question)
+        val = answer.get("answer")
+        ans_type = answer.get("type")
+
+        if val is None or not isinstance(val, (int, float)):
+            return penalties
+
+        num = float(val)
+
+        # 1. Store revenue in VND cannot be < 500 VND (hallucinated division by 1e9 or 1e6)
+        is_revenue_vnd = (
+            ans_type == "number"
+            and any(m in q_norm for m in ("doanh thu", "tien hang", "tong tien", "ban duoc bao nhieu tien"))
+            and not any(k in q_norm for k in (
+                "ti le", "ty le", "%", "phan tram", "tang truong", "thay doi",
+                "don hang", "so don", "don", "so luong", "ly", "chai", "hop", "cai", "sp", "san pham"
+            ))
+        )
+        if is_revenue_vnd and 0.0 < num < 500.0:
+            penalties.append((0.80, f"implausible_vnd_revenue={num}"))
+
+        # 2. Implausible single-store order count > 500,000 orders
+        is_order_count = any(
+            m in q_norm for m in ("so don", "may don", "bao nhieu don", "don hang")
+        ) and not any(k in q_norm for k in ("ti le", "ty le", "%", "doanh thu", "tien"))
+        if is_order_count and num > 500_000:
+            penalties.append((0.70, f"implausible_order_count={num}"))
+
+        # 3. Percent boundaries: bounded shares [0, 100]% vs general percentage
+        if ans_type == "percent":
+            if abs(num) > 1000.0:
+                penalties.append((0.70, f"extreme_percent={num}"))
+            elif any(r in q_norm for r in ("ti le", "ty le", "phan tram", "chiem", "dong gop")) and not any(
+                g in q_norm for g in ("tang truong", "thay doi", "tang", "giam")
+            ):
+                if num < 0.0 or num > 100.0:
+                    penalties.append((0.70, f"rate_out_of_bounds_0_100={num}"))
+
+        return penalties
 
     def _check_plausibility(self, answer: Dict[str, Any]) -> Optional[str]:
         """Check if the answer seems implausible."""
