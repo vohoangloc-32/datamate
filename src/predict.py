@@ -101,7 +101,7 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
         # Number of GPUs used for tensor parallelism. A 3B model fits on a single
         # 16 GB T4, so default to 1 (more robust); set VLLM_TP=2 to use both GPUs.
         tp_size = int(os.environ.get("VLLM_TP", "1"))
-        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192"))
+        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "16384"))
         max_new_tokens = int(os.environ.get("VLLM_MAX_NEW_TOKENS", "1024"))
         prompt_safety_tokens = int(os.environ.get("DATAMATE_PROMPT_SAFETY_TOKENS", "512"))
         max_prompt_tokens = max_model_len - max_new_tokens - prompt_safety_tokens
@@ -165,7 +165,7 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
                                         skip_special_tokens=True)
                 return text.count("```") >= 2
 
-        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192"))
+        max_model_len = int(os.environ.get("VLLM_MAX_MODEL_LEN", "16384"))
         max_new_tokens = int(os.environ.get("VLLM_MAX_NEW_TOKENS", "1024"))
         prompt_safety_tokens = int(os.environ.get("DATAMATE_PROMPT_SAFETY_TOKENS", "512"))
         max_prompt_tokens = max_model_len - max_new_tokens - prompt_safety_tokens
