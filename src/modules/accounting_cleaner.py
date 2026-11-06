@@ -496,6 +496,12 @@ def patch_code_and_tables_for_rulebook(
             r"\1.notna()",
             patched,
         )
+        # Also neutralize .isin([...]) on redundant status columns
+        patched = re.sub(
+            rf"([A-Za-z0-9_]+\[\s*['\"]{_REDUNDANT_STATUS_COLS_PATTERN}['\"]\s*\])\.isin\(\[[^\]]*\]\)",
+            r"\1.notna()",
+            patched,
+        )
     elif "huy" in qtext and not _SPECIFIC_CANCEL_REASON_RE.search(qtext):
         exec_tables = {k: v.copy() for k, v in tables.items()}
         for tname, df in list(exec_tables.items()):
@@ -529,34 +535,53 @@ def patch_code_and_tables_for_rulebook(
 
     # Multi-line order deduplication for order count & cancellation rate
     is_order_counting = any(
-        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "ti le", "ty le", "% don", "so don")
+        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "ti le", "ty le", "% don", "so don", "ti le huy", "tỷ lệ hủy")
     )
     if is_order_counting:
         for tname, df in exec_tables.items():
             oid = find_order_id_column(df)
             if oid is not None and df[oid].duplicated().any():
-                # Rewrite .shape[0] on filtered order calculations
                 patched = re.sub(
-                    rf"(\[[^\]]*__CANCEL__[^\]]*\])\.shape\[0\]",
+                    rf"(\b{tname}\[[^\]]*\])\.shape\[0\]",
                     rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
                     patched,
                 )
-                # Rewrite df.shape[0] or len(df) on order tables that have multi-line items
                 patched = re.sub(
-                    rf"\b{tname}\.shape\[0\]",
-                    f"{tname}['{oid}'].nunique()",
+                    rf"(\b{tname})\.shape\[0\]",
+                    rf"\1['{oid}'].nunique()",
                     patched,
                 )
                 patched = re.sub(
-                    rf"len\(\s*{tname}\s*\)",
-                    f"{tname}['{oid}'].nunique()",
+                    rf"len\(\s*(\b{tname}\[[^\]]*\])\s*\)",
+                    rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
+                    patched,
+                )
+                patched = re.sub(
+                    rf"len\(\s*(\b{tname})\s*\)",
+                    rf"\1['{oid}'].nunique()",
+                    patched,
+                )
+                # Also rewrite order cancellation calculations matching __CANCEL__
+                patched = re.sub(
+                    rf"(\w+\[[^\]]*__CANCEL__[^\]]*\])\.shape\[0\]",
+                    rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
                     patched,
                 )
 
     # Average Order Value (AOV) on multi-line tables:
-    # Rewrite .groupby(oid)[line_item_col].mean() to .groupby(oid)[line_item_col].sum()
     if question_is_average_order_value(question):
-        for line_col in ("Thành tiền", "Tiền bán", "Thành tiền trước giảm", "Số tiền", "ThanhTien", "thanh_tien", "TienBan"):
+        for line_col in ("Thành tiền", "Tiền bán", "Thành tiền trước giảm", "Số tiền", "ThanhTien", "thanh_tien", "TienBan", "Tổng tiền", "TongTien"):
+            # 1. Direct series mean without groupby on multi-line tables:
+            # df['Tổng tiền'].mean() -> df.groupby(oid)['Tổng tiền'].sum().mean()
+            for tname, df in exec_tables.items():
+                oid = find_order_id_column(df)
+                if oid is not None and df[oid].duplicated().any():
+                    patched = re.sub(
+                        rf"(\b{tname}\[[^\]]*\])\[\s*['\"]{line_col}['\"]\s*\]\.mean\(\)",
+                        rf"\1.groupby('{oid}')['{line_col}'].sum().mean()",
+                        patched,
+                    )
+            # 2. Grouped mean: .groupby(oid)[line_col].mean() -> .groupby(oid)[line_col].sum()
             patched = re.sub(
                 rf"\.groupby\(\s*(['\"][^'\"]+['\"])\s*\)\[\s*['\"]{line_col}['\"]\s*\]\.mean\(\)",
                 rf".groupby(\1)['{line_col}'].sum()",
@@ -565,14 +590,14 @@ def patch_code_and_tables_for_rulebook(
 
     # Relational Fan-out Guard:
     # When code merges tables and calculates .sum() on order header total columns (e.g. 'Tổng tiền hàng'),
-    # rewrite to line item total (e.g. 'Thành tiền') or deduplicate subset by order ID.
+    # rewrite to line item total (e.g. 'Thành tiền') on the merged table variable.
     has_merge = bool(re.search(r"\b(?:merge|join)\b", patched))
     if has_merge:
         has_tong_tien = any("Tổng tiền hàng" in df.columns for df in tables.values())
         has_thanh_tien = any("Thành tiền" in df.columns for df in tables.values())
         if has_tong_tien and has_thanh_tien:
             patched = re.sub(
-                r"(\w+)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
+                r"(merged|joined|merge_df|merged_df|df_merged)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
                 r"\1['Thành tiền'].sum()",
                 patched,
             )

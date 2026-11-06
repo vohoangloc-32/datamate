@@ -146,6 +146,14 @@ class ConfidenceGate:
             if not isinstance(val, dict) or not val.get("rows"):
                 confidence -= 0.6
                 reasons.append("empty_table")
+        elif answer_type == "list" and isinstance(val, list) and len(val) >= 2:
+            try:
+                num_list = [float(x) for x in val]
+                if 0.0 in num_list and any(x > 10_000_000 for x in num_list):
+                    confidence -= 0.60
+                    reasons.append("list_contains_zero_with_large_revenues")
+            except Exception:
+                pass
 
         # 6. Type mismatch between expected and actual (Critical: wrong type = -1 point)
         if question_info and question_info.expected_type and answer_type:
@@ -202,8 +210,18 @@ class ConfidenceGate:
 
         # 2. Specific cancel/return reasons
         if any(term in q_norm for term in ("ly do huy", "li do huy", "vi sao huy", "tai sao huy", "nguyen nhan huy", "vi giao tre", "vi het hang", "ly do tra", "nguyen nhan tra")):
-            if not any(any(k in col for k in ("ly do", "reason", "nguyen nhan", "ghi chu")) for col in all_cols):
-                return "cancel_reason_not_in_schema"
+            found_reason = False
+            for df in tables.values():
+                for col in df.columns:
+                    if pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_object_dtype(df[col]):
+                        sample_s = df[col].dropna().astype(str).str.lower()
+                        if sample_s.str.contains(r"giao tre|het hang|doi y|sai hang", regex=True).any():
+                            found_reason = True
+                            break
+                if found_reason:
+                    break
+            if not found_reason:
+                return "cancel_reason_not_recorded_in_data"
 
         # 3. Customer age / birth year
         if any(term in q_norm for term in ("do tuoi", "bao nhieu tuoi", "nam sinh", "ngay sinh")):
@@ -273,6 +291,18 @@ class ConfidenceGate:
             if re.search(r"result\s*=\s*(?:int\()?len\(|result\s*=\s*\w+\.shape\[0\]", code) and ".sum()" not in code:
                 penalties.append((0.60, "count_used_for_monetary_question"))
 
+        # 4. Single-day relative questions missing lower bound or using wrong month-long range
+        is_single_day = any(d in q_norm for d in ("hom nay", "hnay", "bua nay", "hom qua", "hqua", "bua qua"))
+        is_range_or_inventory = any(k in q_norm for k in ("tu ", "den ", "khoang", "giai doan", "trong ")) or any(t in q_norm for t in ("ton", "kho", "con lai", "hang ton"))
+        if is_single_day and not is_range_or_inventory:
+            has_day_bound = bool(
+                re.search(r"\.dt\.(?:date|normalize\(\))\s*==|Timedelta\(\s*days\s*=\s*1\s*\)|Timedelta\(\s*['\"]1\s*d", code)
+            )
+            if not has_day_bound and not re.search(r"<=\s*previous_day\s*\+\s*pd\.Timedelta", code):
+                penalties.append((0.70, "single_day_question_missing_day_boundary"))
+            elif re.search(r"pd\.Timestamp\(['\"]202\d-\d{2}-01['\"]\)\s*.*pd\.Timestamp\(['\"]202\d-\d{2}-(?:28|29|30|31)['\"]\)", code, re.DOTALL):
+                penalties.append((0.70, "single_day_question_uses_month_range"))
+
         return penalties
 
     def _check_domain_plausibility(
@@ -311,7 +341,12 @@ class ConfidenceGate:
         if is_order_count and num > 500_000:
             penalties.append((0.70, f"implausible_order_count={num}"))
 
-        # 3. Percent boundaries: bounded shares [0, 100]% vs general percentage
+        # 3. Order / bill count question returning currency-scale number (> 100,000)
+        is_bill_count = any(b in q_norm for b in ("so bill", "soos bill", "may bill", "bao nhieu bill", "may don", "bao nhieu don", "may dot", "so dot"))
+        if is_bill_count and ans_type == "number" and num > 100_000:
+            penalties.append((0.80, f"implausible_bill_count={num}"))
+
+        # 4. Percent boundaries: bounded shares [0, 100]% vs general percentage
         if ans_type == "percent":
             if abs(num) > 1000.0:
                 penalties.append((0.70, f"extreme_percent={num}"))
