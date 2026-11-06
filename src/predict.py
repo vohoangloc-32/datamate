@@ -111,13 +111,14 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
                 "DATAMATE_PROMPT_SAFETY_TOKENS."
             )
 
+        vllm_dtype = os.environ.get("VLLM_DTYPE", "float16")
         llm = LLM(
             model=model_dir,
             tensor_parallel_size=tp_size,
             trust_remote_code=True,
             max_model_len=max_model_len,
             gpu_memory_utilization=0.85,
-            dtype="float16",  # T4 (compute capability 7.5) has no bf16 support
+            dtype=vllm_dtype,
         )
         vllm_tokenizer = llm.get_tokenizer()
         sampling_params = SamplingParams(
@@ -209,6 +210,7 @@ class DataMatePipeline:
         data_dir: str,
         output_dir: str,
         model_dir: str = "",
+        questions_file: Optional[str] = None,
         max_retries: int = 3,
         confidence_threshold: float = 0.45,
         llm_generate_fn: Optional[Callable[[str], str]] = None,
@@ -219,6 +221,7 @@ class DataMatePipeline:
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
         self.model_dir = model_dir
+        self.questions_file = Path(questions_file) if questions_file else self.data_dir / "questions.jsonl"
 
         # Output paths
         self.submission_path = self.output_dir / "submission.jsonl"
@@ -485,7 +488,7 @@ class DataMatePipeline:
     def run(self):
         """Run the full pipeline on all questions."""
         # Load questions
-        questions_path = self.data_dir / "questions.jsonl"
+        questions_path = self.questions_file
         if not questions_path.exists():
             logger.error("Questions file not found: %s", questions_path)
             return
@@ -537,6 +540,8 @@ def main():
     parser = argparse.ArgumentParser(description="DataMate - Vietnamese QA over Tabular Data")
     parser.add_argument("--data-dir", type=str, required=True,
                         help="Path to the data directory (contains data/, questions.jsonl, etc.)")
+    parser.add_argument("--questions-file", type=str, default=None,
+                        help="Path to questions file (defaults to data-dir/questions.jsonl)")
     parser.add_argument("--output-dir", type=str, required=True,
                         help="Path to the output directory (writes submission.jsonl and logs/)")
     parser.add_argument("--model-dir", type=str, required=True,
@@ -582,6 +587,7 @@ def main():
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         model_dir=args.model_dir,
+        questions_file=args.questions_file,
         max_retries=args.max_retries,
         confidence_threshold=args.confidence_threshold,
         analysis_plan_enabled=args.analysis_plan,
