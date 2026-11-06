@@ -384,3 +384,45 @@ Phân tích số học trực tiếp trên 134 câu sai và đối chiếu ngư�
 #### 4. Kế hoạch Phase 2
 - Xem chi tiết tại `implementation_plan.md` với 6 hạng mục kỹ thuật để đưa PA từ `-0.0400` lên `+0.155 ~ +0.220`.
 
+### Bước ngoặt Google Colab Pro A100 SXM (Run 4) — 2026-11-06
+
+Đã hoàn thành lượt chạy benchmark toàn diện trên Google Colab Pro sử dụng **1x NVIDIA A100 SXM (40GB/80GB)**, vLLM chế độ đơn GPU (`VLLM_TP=1`), tích hợp đầy đủ bộ lọc SOTA ConfidenceGate (3 tầng: Schema Answerability, Domain Plausibility, Execution Degeneracy) và AST Granularity Refiner (`accounting_cleaner.py`).
+
+#### 1. Bảng đối chiếu tiến trình phát triển
+
+| Chỉ số | Baseline cũ (`34f784b0`) | Run 3 Kaggle (2x T4) | **Colab Pro Run 4 (1x A100 SXM)** | Tiến bộ so với Run 3 |
+|---|---:|---:|---:|---:|
+| **Số câu ĐÚNG (+1 pt)** | 34 (17.0%) | 93 (46.5%) | **89 (44.5%)** | Ổn định ở mức cao |
+| **Số câu SAI (-1 pt)** | 134 (67.0%) | 87 (43.5%) | **33 (16.5%)** 🎯 | **Giảm kỷ lục 54 câu sai (-62.1%)!** |
+| **Số câu ABSTAIN (0 pt)** | 32 (16.0%) | 20 (10.0%) | **78 (39.0%)** | Chặn rủi ro cực tốt |
+| 🔥 **PENALIZED ACCURACY** | **-0.5000 (-50.0%)** | **+0.0300 (+3.0%)** | **+0.2800 (+28.00%)** 🚀 | **TĂNG GẤP GẦN 10 LẦN (+25.0% tuyệt đối)** |
+| **Thời gian chạy 200 câu** | ~3.59 giờ (12.909s) | ~3.50 giờ (12.600s) | **33 phút (1.980s)** ⚡ | **Nhanh hơn gấp 6.5 lần** |
+| **Tốc độ trung bình / câu** | 64.5 giây | ~63.0 giây | **~9.9 giây / câu** | Hiệu suất vượt bậc |
+
+$$\mathbf{PA = \frac{89 - 33}{200} = +0.2800 \ (+28.00\%)}$$
+
+#### 2. Chi tiết theo từng loại câu hỏi (`reference_type`) ở Run 4
+
+| Loại đáp án | Tổng câu | Đúng | Sai | Abstain | PA Nhóm | Đánh giá |
+|---|---:|---:|---:|---:|---:|---|
+| **`number`** | 126 | **65** | 18 | 43 | **+0.3730** 🟢 | Tăng vọt từ +0.0079 lên +0.3730. Lỗi giảm sâu từ 51 câu xuống 18 câu! |
+| **`string`** | 6 | **4** | 0 | 2 | **+0.6667** 🟢 | **0 câu sai!** Lọc sạch 100% bẫy khách lẻ và dòng 'Tổng cộng'. |
+| **`unanswerable`** | 5 | **2** | 0 | 3 | **+0.4000** 🟢 | **0 câu sai!** Nhận diện chính xác thiếu dữ liệu/thiếu lý do hủy. |
+| **`boolean`** | 1 | **1** | 0 | 0 | **+1.0000** 🟢 | Đúng tuyệt đối. |
+| **`date`** | 10 | **6** | 4 | 0 | **+0.2000** 🟢 | Giữ điểm dương ổn định. |
+| **`percent`** | 38 | **9** | 5 | 24 | **+0.1053** 🟢 | **Chính thức đổi màu từ ÂM (-0.2895) sang DƯƠNG (+0.1053)!** Sai giảm từ 21 xuống còn 5 câu. |
+| **`list`** | 13 | **2** | 5 | 6 | **-0.2308** | Cần tinh chỉnh thêm định dạng phân cách. |
+| **`table`** | 1 | 0 | 1 | 0 | **-1.0000** | Mẫu nhỏ. |
+
+#### 3. Phát hiện then chốt về giới hạn Token Budget (40 câu bị nghẽn)
+
+Phân tích log chi tiết của 78 câu Abstain ở Run 4 đã chỉ ra một phát hiện đặc biệt:
+- Do thiết lập mặc định `VLLM_MAX_MODEL_LEN = 8192`, trần ngân sách cho prompt bị co hẹp còn **5.632 tokens**.
+- Có đúng **40/200 câu (20.0%)** thuộc các doanh nghiệp lớn (như `biz_119`, `biz_120`, `biz_124` với 10–13 bảng) đòi hỏi từ 5.700 đến 10.230 tokens.
+- Mặc dù `PromptBuilder` đã tự động compact nhiều vòng, prompt tối thiểu vẫn vượt 5.632 tokens nên pipeline buộc phải kích hoạt fallback an toàn:
+  ```text
+  pipeline_error: Core prompt exceeds the configured input budget of 5632 tokens even after compaction (minimum measured: 5756..10230 tokens).
+  ```
+- **Ý nghĩa & Tiềm năng:** Dù bị mất trắng cơ hội ghi điểm ở 40 câu này mà PA vẫn đạt **+0.2800**. Khi nâng lên chuẩn **`16384` (16k context)** với ngân sách **13.824 tokens**, toàn bộ 40 câu này sẽ được giải phóng hoàn toàn để mô hình sinh code, dự kiến sẽ đưa PA vượt ngưỡng **+0.350 ~ +0.400**.
+
+
