@@ -272,8 +272,8 @@ _RANK_CUSTOMER_RE = re.compile(
     r"|\b(top|nhieu nhat|cao nhat)\b.*\b(khach)\b"
 )
 _AOV_RE = re.compile(
-    r"\b(trung binh moi don|binh quan moi don|binh quan moi bill|gia tri trung binh mot don"
-    r"|doanh thu trung binh.*don|dthu trung binh.*don|doanh thu binh quan.*don|doanh thu binh quan.*bill)\b"
+    r"\b(trung binh moi (?:don|bill|order)|binh quan moi (?:don|bill|order)|gia tri trung binh mot (?:don|bill|order)"
+    r"|doanh thu trung binh.*(?:don|bill|order)|dthu trung binh.*(?:don|bill|order)|doanh thu binh quan.*(?:don|bill|order)|dthu binh quan.*(?:don|bill|order))\b"
 )
 _PURE_REVENUE_RE = re.compile(
     r"\b(doanh thu|dthu|revenue|ban duoc bao nhieu tien|ban dc bao nhieu tien"
@@ -403,6 +403,49 @@ def prepare_tables_for_question(
                 if drop.any():
                     out[name] = work.loc[~drop].copy()
 
+    # Rulebook §1: Sync item line sums from detail tables into header tables
+    detail_amount_cols = ("T.Tiền", "Thành tiền", "Amount", "Tiền bán", "Thanh tien", "ThanhTien")
+    for hname, hdf in list(out.items()):
+        h_oid = find_order_id_column(hdf)
+        if h_oid is None or hdf.empty:
+            continue
+        h_orders = set(hdf[h_oid].dropna().unique())
+        if not h_orders:
+            continue
+        for dname, ddf in out.items():
+            if dname == hname or ddf.empty:
+                continue
+            d_oid = find_order_id_column(ddf)
+            if d_oid is None:
+                continue
+            d_orders = set(ddf[d_oid].dropna().unique())
+            if len(d_orders.intersection(h_orders)) > 0.5 * len(d_orders):
+                line_col = next((c for c in detail_amount_cols if c in ddf.columns), None)
+                if line_col and "Tổng tiền hàng" not in hdf.columns:
+                    line_sums = ddf.groupby(d_oid)[line_col].sum()
+                    hdf["Tổng tiền hàng"] = hdf[h_oid].map(line_sums).fillna(0)
+                    out[hname] = hdf
+                break
+
+    # Auto-map Customer Names into order tables that only have Customer IDs
+    for hname, hdf in list(out.items()):
+        h_oid = find_order_id_column(hdf)
+        if h_oid is None or hdf.empty:
+            continue
+        cust_id_col = next((c for c in hdf.columns if compact_identifier(c) in ("makh", "makhach", "makhachhang", "makhachmua", "customerid", "sokh")), None)
+        cust_name_col = next((c for c in hdf.columns if compact_identifier(c) in ("tenkh", "tenkhach", "tenkhachhang", "customername")), None)
+        if cust_id_col and not cust_name_col:
+            for cname, cdf in out.items():
+                if cname == hname or cdf.empty:
+                    continue
+                c_id_col = next((c for c in cdf.columns if compact_identifier(c) in ("makh", "makhach", "makhachhang", "makhachmua", "customerid", "sokh", "makh")), None)
+                c_name_col = next((c for c in cdf.columns if compact_identifier(c) in ("tenkh", "tenkhach", "tenkhachhang", "customername", "hovaten")), None)
+                if c_id_col and c_name_col:
+                    id_map = dict(zip(cdf[c_id_col], cdf[c_name_col]))
+                    hdf["Tên khách hàng"] = hdf[cust_id_col].map(id_map).fillna(hdf[cust_id_col])
+                    out[hname] = hdf
+                    break
+
     return out
 
 
@@ -490,15 +533,14 @@ def patch_code_and_tables_for_rulebook(
     exec_tables = tables
 
     if not needs_all:
+        # Neutralize redundant status filters (including ~df['Trạng thái'].isin(...)) on pre-filtered tables
         patched = re.sub(
-            rf"([A-Za-z0-9_]+\[\s*['\"]{_REDUNDANT_STATUS_COLS_PATTERN}['\"]\s*\])\s*"
-            r"==\s*['\"](?:Hoàn thành|Đã hoàn thành|completed|xong|đã xong|Đã giao|Thành công|đã lấy|ok)['\"]",
+            rf"~?\s*([A-Za-z0-9_]+\[\s*['\"]{_REDUNDANT_STATUS_COLS_PATTERN}['\"]\s*\])\.isin\(\[[^\]]*\]\)",
             r"\1.notna()",
             patched,
         )
-        # Also neutralize .isin([...]) on redundant status columns
         patched = re.sub(
-            rf"([A-Za-z0-9_]+\[\s*['\"]{_REDUNDANT_STATUS_COLS_PATTERN}['\"]\s*\])\.isin\(\[[^\]]*\]\)",
+            rf"~?\s*([A-Za-z0-9_]+\[\s*['\"]{_REDUNDANT_STATUS_COLS_PATTERN}['\"]\s*\])\s*(?:==|!=)\s*['\"][^'\"]*['\"]",
             r"\1.notna()",
             patched,
         )
@@ -606,6 +648,10 @@ def patch_code_and_tables_for_rulebook(
     patched = _fix_date_boundaries(patched)
 
     if question_is_pure_revenue(question):
+        has_injected_tong_tien_hang = any("Tổng tiền hàng" in df.columns for df in exec_tables.values())
+        if has_injected_tong_tien_hang:
+            for old_col in ("Tổng bill", "Tong tien", "Tổng đơn", "Thanh toán", "Tổng sau giảm giá"):
+                patched = patched.replace(f"['{old_col}']", "['Tổng tiền hàng']").replace(f'["{old_col}"]', '["Tổng tiền hàng"]')
         has_tong_tien_hang = any(
             "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns
             for df in tables.values()

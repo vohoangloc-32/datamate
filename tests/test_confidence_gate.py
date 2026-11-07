@@ -155,3 +155,28 @@ def test_confidence_gate_domain_plausibility_layer3():
     )
     assert res_rate["type"] == "abstain"
     assert "rate_out_of_bounds" in res_rate["reason"]
+
+
+def test_confidence_gate_allows_two_timestamps_single_day():
+    gate = ConfidenceGate(min_confidence=0.45)
+    q_info = QuestionInfo(expected_type="number", confidence=0.9)
+    code = """
+filtered_df = df[
+    (df['Ngày'] >= pd.Timestamp('2026-05-02')) &
+    (df['Ngày'] < pd.Timestamp('2026-05-03'))
+]
+result = filtered_df['Mã đơn'].nunique()
+answer_type = 'number'
+"""
+    answer = {"type": "number", "answer": 50}
+    res = gate.evaluate(answer, question_info=q_info, question="soos bill hqua là nhiêu đó", code=code)
+    assert res["type"] == "number"
+    assert res["answer"] == 50
+
+
+def test_confidence_gate_converts_unverified_unanswerable_to_abstain():
+    gate = ConfidenceGate(min_confidence=0.45)
+    q_info = QuestionInfo(expected_type="date", confidence=0.9)
+    answer = {"type": "unanswerable"}
+    res = gate.evaluate(answer, question_info=q_info, question="ngày nào trong tháng 9/2025 doanh thu cao nhất đó")
+    assert res["type"] == "abstain"

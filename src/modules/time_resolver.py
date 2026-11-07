@@ -346,6 +346,69 @@ class TimeResolver:
         Returns a list of (expression, start_date, end_date) tuples.
         """
         results = []
+        norm_q = _normalize_for_matching(question)
+
+        # 1. Special pattern: "N ngày kể từ ngày DD/MM/YYYY ... N ngày ngay trước đó"
+        m_event = re.search(r"(\d+)\s*ngay\s*ke\s*tu\s*ngay\s*(\d{1,2}[/\-.]\d{1,2}(?:[/\-.]\d{2,4})?)", norm_q)
+        if m_event:
+            n_days = int(m_event.group(1))
+            d_parts = re.split(r"[/\-.]", m_event.group(2))
+            ev_d = int(d_parts[0])
+            ev_m = int(d_parts[1])
+            ev_y = int(d_parts[2]) if len(d_parts) > 2 else as_of.year
+            if ev_y < 100:
+                ev_y += 2000
+            try:
+                event_d = date(ev_y, ev_m, ev_d)
+                p1_start = event_d
+                p1_end = event_d + timedelta(days=n_days - 1)
+                p2_start = event_d - timedelta(days=n_days)
+                p2_end = event_d - timedelta(days=1)
+                results.append((f"{n_days} ngày kể từ ngày {event_d.strftime('%d/%m/%Y')}", p1_start, p1_end))
+                results.append((f"{n_days} ngày ngay trước ngày {event_d.strftime('%d/%m/%Y')}", p2_start, p2_end))
+                return results
+            except ValueError:
+                pass
+
+        # 2. Special pattern: "tháng M/YYYY so với tháng trước (đó / liền trước)"
+        m_expl = re.search(r"thang\s+(\d{1,2})\s*(?:[/\-]|nam\s*)(\d{4})", norm_q)
+        has_prev_month_comp = bool(re.search(r"(?:thang|th)\s*(?:truoc|lien truoc|truoc do)", norm_q))
+        if m_expl and has_prev_month_comp:
+            t_m = int(m_expl.group(1))
+            t_y = int(m_expl.group(2))
+            prev_m = t_m - 1 if t_m > 1 else 12
+            prev_y = t_y if t_m > 1 else t_y - 1
+            expl_range = _month_range(t_y, t_m, date(2099, 1, 1))
+            prev_range = _month_range(prev_y, prev_m, date(2099, 1, 1))
+            results.append((f"tháng {t_m}/{t_y}", expl_range[0], expl_range[1]))
+            results.append((f"tháng trước đó ({prev_m}/{prev_y})", prev_range[0], prev_range[1]))
+            return results
+
+        # 3. Special pattern: "từ đầu tháng (này) đến hết hôm nay/bữa nay ... cùng kỳ tháng trước"
+        if re.search(r"tu\s+dau\s+thang", norm_q) and re.search(r"cung\s*ky\s*th(?:ang)?\s*truoc", norm_q):
+            prev_y = as_of.year if as_of.month > 1 else as_of.year - 1
+            prev_m = as_of.month - 1 if as_of.month > 1 else 12
+            first_prev, last_prev = _month_range(prev_y, prev_m, as_of)
+            cap_day = min(as_of.day, last_prev.day)
+            results.append(("từ đầu tháng này đến hết hôm nay", date(as_of.year, as_of.month, 1), as_of))
+            results.append(("cùng kỳ tháng trước", date(prev_y, prev_m, 1), date(prev_y, prev_m, cap_day)))
+            return results
+
+        # 4. Special pattern: "từ đầu năm đến (hết) hôm nay/bữa nay/hnay"
+        if re.search(r"tu\s+dau\s+nam", norm_q):
+            results.append(("từ đầu năm đến hết hôm nay", date(as_of.year, 1, 1), as_of))
+            return results
+
+        # Standard extraction
+        for match in re.finditer(
+            r"\d+\s*ngay\s*gan\s*nhat",
+            norm_q,
+        ):
+            expr = match.group(0)
+            resolved = self.resolve(expr, as_of)
+            if resolved:
+                results.append((expr, resolved[0], resolved[1]))
+
         patterns = [
             r"(tháng\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua|\d{1,2}(?:\s*(?:[/\-]|năm\s*)\d{4})?|\w+))",
             r"(tuần\s+(?:này|nay|rồi|trước|qua|vừa rồi|vừa qua))",
@@ -358,21 +421,16 @@ class TimeResolver:
             r"(\d+\s*ngày\s*(?:trước|qua))",
         ]
 
-        normalized_question = _normalize_for_matching(question)
-        for match in re.finditer(
-            r"\d+\s*ngay\s*gan\s*nhat",
-            normalized_question,
-        ):
-            expr = match.group(0)
-            resolved = self.resolve(expr, as_of)
-            if resolved:
-                results.append((expr, resolved[0], resolved[1]))
-
+        seen_spans = set()
         for pattern in patterns:
             for m in re.finditer(pattern, question.lower()):
+                span = (m.start(), m.end())
+                if any(s[0] <= span[0] and span[1] <= s[1] for s in seen_spans):
+                    continue
                 expr = m.group(1)
                 resolved = self.resolve(expr, as_of)
                 if resolved:
                     results.append((expr, resolved[0], resolved[1]))
+                    seen_spans.add(span)
 
         return results

@@ -175,3 +175,37 @@ def test_extract_and_resolve_with_explicit_years():
     assert len(extracted) == 1
     assert extracted[0][1] == date(2025, 8, 1)
     assert extracted[0][2] == date(2025, 8, 31)
+
+
+def test_extract_and_resolve_comparison_preceding_month():
+    resolver = TimeResolver()
+    as_of = date(2026, 7, 9)
+    q = "dthu tháng 3/2026 hơn hay kém tháng trước bn %"
+    res = resolver.extract_and_resolve(q, as_of)
+    assert len(res) == 2
+    assert res[0][1] == date(2026, 3, 1)
+    assert res[0][2] == date(2026, 3, 31)
+    assert res[1][1] == date(2026, 2, 1)
+    assert res[1][2] == date(2026, 2, 28)
+
+
+def test_extract_and_resolve_event_window():
+    resolver = TimeResolver()
+    as_of = date(2026, 7, 31)
+    q = "Cho hỏi so số ly Trà sữa ô long (L) bán ra trong 14 ngày kể từ ngày 13/07/2026, ngày tăng giá lên 53.500đ, với 14 ngày ngay trước ngày đó"
+    res = resolver.extract_and_resolve(q, as_of)
+    assert len(res) == 2
+    assert res[0][1] == date(2026, 7, 13)
+    assert res[0][2] == date(2026, 7, 26)
+    assert res[1][1] == date(2026, 6, 29)
+    assert res[1][2] == date(2026, 7, 12)
+
+
+def test_extract_and_resolve_ytd_and_mtd():
+    resolver = TimeResolver()
+    as_of = date(2026, 7, 8)
+    q = "tinh tu dau nam den het hnay, cua hang da co tong cong bao nhieu don"
+    res = resolver.extract_and_resolve(q, as_of)
+    assert len(res) >= 1
+    assert res[0][1] == date(2026, 1, 1)
+    assert res[0][2] == date(2026, 7, 8)

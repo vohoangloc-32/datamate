@@ -433,8 +433,14 @@ class PromptBuilder:
                 return prompt[:start]
             return prompt[:start] + prompt[next_section:]
 
-        base_prompts = [original_prompt]
-        compact_prompt = original_prompt
+        clean_original = original_prompt.rstrip()
+        if clean_original.endswith("```python"):
+            clean_original = clean_original[:-len("```python")].rstrip()
+        elif clean_original.endswith("```"):
+            clean_original = clean_original[:-len("```")].rstrip()
+
+        base_prompts = [clean_original]
+        compact_prompt = clean_original
         for heading in ("SAMPLE ROWS", "EXAMPLES", "BUSINESS CONTEXT"):
             compact_prompt = remove_section(compact_prompt, heading)
             if compact_prompt not in base_prompts:
@@ -493,7 +499,7 @@ class PromptBuilder:
                 "after removing optional context and truncating error details."
             )
         return "\n".join([
-            original_prompt,
+            clean_original,
             "\n## PREVIOUS ATTEMPT (FAILED)",
             f"```python\n{generated_code}\n```",
             "\n## ERROR",

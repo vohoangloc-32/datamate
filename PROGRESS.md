@@ -462,3 +462,32 @@ $$\mathbf{PA = \frac{103 - 52}{200} = +0.2550 \ (+25.50\%)}$$
 
 
 
+
+### Phase 5: Khắc phục triệt để các bẫy nghiệp vụ sau phân tích pháp y Run 4b — 2026-11-07
+
+Sau khi phân tích pháp y toàn diện 52 câu Sai và 45 câu Abstain ở Run 4b (`results_20261106_103248/`), đã xác định và giải quyết dứt điểm các lỗi kỹ thuật và nghiệp vụ cốt lõi:
+
+#### 1. Các bản vá đã triển khai
+
+1. **`src/modules/accounting_cleaner.py`:**
+   - **Sửa lỗi bẫy phủ định trạng thái (`~?\s*`):** Regex trước đó bỏ sót dấu `~` trong `~df['Trạng thái'].isin(...)`, khiến biểu thức bị biến thành `~df['Trạng thái'].notna()` (tương đương `isna()`) làm rỗng hoàn toàn DataFrame trên 15 câu (`EmptyFilterError`, `formatting_failure`, rơi vào nhánh `else: unanswerable`). Đã chuẩn hóa toàn bộ `~?\s*...isin(...)` và `~?\s*...== / !=` thành `.notna()`.
+   - **Đồng bộ doanh thu Rulebook §1 từ Detail sang Header:** Ở các cửa hàng tách bảng Header – Detail (`biz_111`, `biz_124`, `biz_127`, `biz_129`), cột bill của Header đã cộng phí giao hàng và trừ voucher toàn đơn. Pipeline nay tự động tính tổng thành tiền dòng hàng từ bảng Detail theo mã đơn và gán vào `'Tổng tiền hàng'` trên bảng Header, đồng thời chuyển hướng phép tính doanh thu thuần sang cột này.
+   - **Tự động ánh xạ tên khách hàng:** Bổ sung cột `'Tên khách hàng'` vào bảng đơn hàng từ bảng khách hàng nếu đơn hàng chỉ lưu mã khách, tránh việc xếp hạng khách hàng trả về mã `['KHxxxx', ...]`.
+   - **Mở rộng nhận diện AOV:** Thêm `(?:don|bill|order)` vào `_AOV_RE` để làm tròn AOV về số nguyên theo Rulebook §3 cho các câu có từ lóng `"order"`.
+
+2. **`src/modules/time_resolver.py`:**
+   - **Neo tháng trước vào tháng so sánh cụ thể:** Khi câu hỏi có `tháng M/YYYY` và so sánh với `"tháng trước / tháng liền trước / tháng trước đó"`, thời gian so sánh được neo chính xác vào `M-1/YYYY` thay vì lấy theo `as_of_date`.
+   - **Giải nghĩa cửa sổ sự kiện đổi giá:** Tự động giải nghĩa mẫu `"N ngày kể từ ngày DD/MM/YYYY ... N ngày ngay trước đó"` thành 2 khoảng thời gian `[event_date, event_date + N days)` và `[event_date - N days, event_date)` chuẩn xác tuyệt đối.
+   - **Chuẩn hóa khoảng thời gian YTD và MTD:** Hỗ trợ mẫu `"từ đầu năm đến (hết) hôm nay"` (`[YYYY-01-01, as_of_date]`) và `"từ đầu tháng này đến hết hôm nay ... cùng kỳ tháng trước"`.
+
+3. **`src/modules/confidence_gate.py`:**
+   - **Nhận diện 2 Timestamp cách nhau 1 ngày:** Chấp nhận mẫu lọc ngày chuẩn `>= pd.Timestamp('YYYY-MM-DD') & < pd.Timestamp('YYYY-MM-DD+1')` mà không bị phạt oan `-0.70 confidence`.
+   - **Miễn trừ kiểm tra lọc thời gian cho bảng snapshot:** Bảng `BaoCaoTonKho` (tồn kho tại `as_of_date`) và bảng tháng `__Txx_202x` được miễn trừ phạt `missing_temporal_filter_in_code`.
+   - **Chặn phạt -1 từ `unanswerable` suy đoán:** Chuyển đổi các kết quả `unanswerable` do code sinh tự gán sau retry (khi không được xác nhận bởi `_audit_schema_answerability`) thành `abstain` (nhận 0 điểm thay vì -1 điểm).
+
+4. **`src/modules/prompt_builder.py`:**
+   - Cắt bỏ khối code ````python` chưa đóng ở cuối `original_prompt` trước khi ghép nối ngữ cảnh retry, giúp cấu trúc markdown của prompt retry hoàn toàn hợp lệ.
+
+#### 2. Kết quả kiểm thử tự động
+- `pytest tests/`: **165/165 passed** (100% test suites passed).
+- Đã bổ sung 8 unit tests mới bao phủ toàn bộ các trường hợp nghiệp vụ trên.

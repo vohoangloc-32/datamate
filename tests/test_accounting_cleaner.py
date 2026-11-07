@@ -379,3 +379,39 @@ def test_patch_multiline_order_deduplication_and_fan_out():
     code_merge = "merged = pd.merge(don_hang, chi_tiet, on='Mã đơn')\nresult = merged['Tổng tiền hàng'].sum()"
     patched_merge, _ = patch_code_and_tables_for_rulebook(code_merge, "Tổng doanh thu?", tables)
     assert "merged['Thành tiền'].sum()" in patched_merge
+
+
+def test_aov_with_order_slang():
+    assert question_is_average_order_value("coi gium thang 8/2025 dthu binh quan moi order la bao nhieu ha")
+    assert question_is_average_order_value("dthu trung binh tren mot don thang 7/2025 la bnhiu")
+
+
+def test_status_neutralization_with_tilde():
+    tables = {
+        "df": pd.DataFrame({
+            "Mã đơn": ["ORD1", "ORD2"],
+            "Trạng thái": ["Hoàn thành", "Đã giao"],
+            "Tiền": [1000, 2000]
+        })
+    }
+    code = "valid = df[~df['Trạng thái'].isin(['Đã hủy', 'Đã trả hàng'])]\nresult = valid['Tiền'].sum()"
+    patched, _ = patch_code_and_tables_for_rulebook(code, "Doanh thu tháng này?", tables)
+    assert "df['Trạng thái'].notna()" in patched
+    assert "~df['Trạng thái'].notna()" not in patched
+
+
+def test_header_detail_line_sum_injection():
+    df_h = pd.DataFrame({
+        "Mã chứng từ": ["HD1", "HD2"],
+        "Tổng bill": [115000, 215000],  # includes 15k shipping fee
+        "Trạng thái": ["Hoàn thành", "Hoàn thành"]
+    })
+    df_d = pd.DataFrame({
+        "Ma don": ["HD1", "HD1", "HD2"],
+        "Sản phẩm": ["Món A", "Món B", "Món C"],
+        "T.Tiền": [50000, 50000, 200000]  # pure line items
+    })
+    tables = {"don_hang": df_h, "chi_tiet_don": df_d}
+    prepared = prepare_tables_for_question(tables, "Tổng doanh thu tháng này?")
+    assert "Tổng tiền hàng" in prepared["don_hang"].columns
+    assert prepared["don_hang"]["Tổng tiền hàng"].tolist() == [100000, 200000]

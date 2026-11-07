@@ -60,10 +60,6 @@ class ConfidenceGate:
         2. Static AST Code Audit (missing temporal filter, unauthorized unit division, count vs sum).
         3. Domain Plausibility Gate & Calibrated Confidence Scoring.
         """
-        # Already abstain or unanswerable — pass through
-        if answer.get("type") in ("abstain", "unanswerable"):
-            return answer
-
         # --- Layer 1: Schema Answerability Audit ---
         if question and tables:
             unanswerable_reason = self._audit_schema_answerability(question, tables)
@@ -73,6 +69,17 @@ class ConfidenceGate:
                     "type": "unanswerable",
                     "reason": unanswerable_reason,
                 }
+
+        # Already abstain — pass through
+        if answer.get("type") == "abstain":
+            return answer
+
+        # Guard against hallucinated unanswerable fallback from LLM (avoids -1 penalty)
+        if answer.get("type") == "unanswerable":
+            return {
+                "type": "abstain",
+                "reason": "unverified_unanswerable_converted_to_abstain",
+            }
 
         confidence = 1.0
         reasons = []
@@ -267,16 +274,20 @@ class ConfidenceGate:
 
         if has_time_constraint:
             code_lower = code.lower()
-            time_tokens = (
-                "ngay", "date", "time", "thang", "nam", "quy",
-                "month", "year", "quarter", "day",
-                "timestamp", "to_datetime", "dt.", "between", "timedel"
-            )
-            has_time_token = any(tok in code_lower for tok in time_tokens) or bool(
-                re.search(r"['\"](?:202[4-6](?:-\d{2})?)['\"]", code)
-            )
-            if not has_time_token:
-                penalties.append((0.60, "missing_temporal_filter_in_code"))
+            # Snapshot tables (e.g. inventory report) or monthly specific tables don't need explicit date filters
+            is_snapshot_table = any(t in code_lower for t in ("tonkho", "baocaotonkho", "inventory", "stock"))
+            is_month_specific_table = bool(re.search(r"__(?:t\d{1,2}_202\d|source_month)", code_lower))
+            if not is_snapshot_table and not is_month_specific_table:
+                time_tokens = (
+                    "ngay", "date", "time", "thang", "nam", "quy",
+                    "month", "year", "quarter", "day",
+                    "timestamp", "to_datetime", "dt.", "between", "timedel"
+                )
+                has_time_token = any(tok in code_lower for tok in time_tokens) or bool(
+                    re.search(r"['\"](?:202[4-6](?:-\d{2})?)['\"]", code)
+                )
+                if not has_time_token:
+                    penalties.append((0.60, "missing_temporal_filter_in_code"))
 
         # 2. Unauthorized unit division (e.g. dividing by 1e9 / 1e6 when question did not ask for billions/millions)
         if re.search(r"/\s*(?:1(?:_?000){2,3}|1e[69]|10\s*\*\*\s*[69])\b", code):
@@ -295,10 +306,24 @@ class ConfidenceGate:
         is_single_day = any(d in q_norm for d in ("hom nay", "hnay", "bua nay", "hom qua", "hqua", "bua qua"))
         is_range_or_inventory = any(k in q_norm for k in ("tu ", "den ", "khoang", "giai doan", "trong ")) or any(t in q_norm for t in ("ton", "kho", "con lai", "hang ton"))
         if is_single_day and not is_range_or_inventory:
-            has_day_bound = bool(
-                re.search(r"\.dt\.(?:date|normalize\(\))\s*==|Timedelta\(\s*days\s*=\s*1\s*\)|Timedelta\(\s*['\"]1\s*d", code)
+            # Check for two timestamps 1 day apart (e.g. >= pd.Timestamp('2026-05-02') & < pd.Timestamp('2026-05-03'))
+            m_ts = re.findall(r"pd\.Timestamp\(['\"](\d{4}-\d{2}-\d{2})['\"]\)", code)
+            ts_1day_apart = False
+            if len(m_ts) >= 2:
+                try:
+                    from datetime import date as _dt_date
+                    d0 = _dt_date.fromisoformat(m_ts[0])
+                    d1 = _dt_date.fromisoformat(m_ts[1])
+                    if abs((d1 - d0).days) == 1:
+                        ts_1day_apart = True
+                except Exception:
+                    pass
+            has_day_bound = (
+                bool(re.search(r"\.dt\.(?:date|normalize\(\))\s*==|Timedelta\(\s*days\s*=\s*1\s*\)|Timedelta\(\s*['\"]1\s*d", code))
+                or ts_1day_apart
+                or bool(re.search(r"<=\s*previous_day\s*\+\s*pd\.Timedelta", code))
             )
-            if not has_day_bound and not re.search(r"<=\s*previous_day\s*\+\s*pd\.Timedelta", code):
+            if not has_day_bound:
                 penalties.append((0.70, "single_day_question_missing_day_boundary"))
             elif re.search(r"pd\.Timestamp\(['\"]202\d-\d{2}-01['\"]\)\s*.*pd\.Timestamp\(['\"]202\d-\d{2}-(?:28|29|30|31)['\"]\)", code, re.DOTALL):
                 penalties.append((0.70, "single_day_question_uses_month_range"))
