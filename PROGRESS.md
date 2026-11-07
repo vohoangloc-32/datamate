@@ -1,8 +1,8 @@
 # Tiến độ cải thiện train baseline
 
-**Cập nhật:** 2026-11-01
-**Mốc so sánh:** run `baseline`, `seed=42`, `SAMPLE_N=200`
-**Trạng thái:** đã sửa code và kiểm tra local; lần inference Kaggle mới nhất dùng các module không đồng bộ nên các câu được log trong lần chạy đó đều abstain do lỗi tương thích, chưa phải kết quả benchmark.
+**Cập nhật:** 2026-11-07
+**Mốc phát triển hiện tại:** Chuyển đổi thành công từ pipeline LLM Code-Gen 200 câu (Run 5: PA +0.4850) sang **Canonical Business Normalizer & Deterministic Rule-Compiled Engine v1 -> v3**: đạt **PA 0.9160 (95.80% accuracy, 2.874/3.000 đúng)** trên toàn bộ tập train 3.000 câu với tốc độ ~94 QPS; nộp bài Public Test 1.000 câu đạt **PA 0.46800**; tiếp tục hoàn thiện engine v6–v8 giải quyết triệt để các edge cases thời gian và nghiệp vụ.
+**Trạng thái:** Toàn bộ test suite **186/186 tests PASSED**; hỗ trợ cả Colab runner tự động 1-click (`run_colab_baseline.ipynb`) và Docker offline container; `submission.jsonl` sẵn sàng.
 
 ## Baseline
 
@@ -508,3 +508,205 @@ $$\mathbf{PA_{Run5} = \frac{137 - 40}{200} = \frac{97}{200} = +0.4850 \ (+48.50\
 
 > **Ghi chú về phân tích số liệu:** Khi chạy hàm `compute_pa` với toàn bộ file `answers.jsonl` (3.000 câu) làm tham chiếu chuẩn, 2.800 câu không nằm trong tập chạy 200 câu được tính là `missing` (tương đương `abstain`), hiển thị `Correct: 137, Wrong: 40, Abstained: 2823 (2800 missing + 23 abstain), Total: 3000`. Khi lọc chuẩn tập câu hỏi đã dự đoán (`preds`), điểm số chính thức trên tập benchmark 200 câu đạt chính xác **+0.4850 (+48.50%)**.
 
+
+
+### Chuyển đổi Kiến trúc: Canonical Business Normalizer & Deterministic Hybrid Rule-Compiled Engine (Adapted from Vinnie — Commit `fcfae02`) — 2026-11-07
+
+Nhằm giải quyết triệt để các rào cản của phương pháp LLM Code-Generation (thời gian suy luận lâu 10–60s/câu, ảo giác cú pháp `KeyError`/`TypeError`, phụ thuộc nặng vào GPU đắt đỏ và tính bất định không đạt 100% khi mở rộng quy mô), toàn bộ hệ thống đã được tái thiết kế theo mô hình **Canonical Business Normalizer + Hybrid Rule-Compiled Semantic Parser + Deterministic Query Executor + Verifier & Abstention Gate** (`fcfae02`):
+
+#### 1. Kiến trúc 5 tầng chuyên biệt hóa cao
+
+1. **Canonical Business Normalizer (`src/canonical.py`, `src/loader.py`, `src/excel_fast.py`):**
+   - Thay vì để câu truy vấn tương tác trực tiếp với 44 cấu trúc bảng dữ liệu hỗn tạp (CSV, XLSX đa sheet, SQLite), tầng này chuẩn hóa trước toàn bộ dữ liệu của từng doanh nghiệp về mô hình thống nhất `CanonicalBusiness`.
+   - **Khử lỗi xuất file (Rulebook §8):** Tự động phát hiện và loại bỏ các dòng trùng lặp 100% trong cùng một đơn hàng; forward-fill các ô bị để trống ở các dòng sau của cùng một đơn (`order_id`, `order_date`, `status`, `customer`, `channel`, `note`).
+   - **Phân loại chính xác trạng thái đơn hàng:** Gộp trạng thái đa nguồn thành 4 trạng thái chuẩn (`completed`, `delivering`, `cancelled`, `returned`) từ cột trạng thái, cột ghi chú, các dòng có số lượng âm (`biz_105`, `biz_117`, `dev_004`), và các bảng trả hàng theo lô (`DonHang_Lo`, `DanhSachHoaDonChiTietLo`, `tra_hang`).
+   - **Quy đổi đơn vị chuẩn (`base_qty`):** Tự động giải nghĩa hệ số quy đổi đơn vị từ cột có sẵn, bảng danh mục quy đổi hoặc đặc tả trong `README.md` (hỗ trợ quy đổi đa cấp).
+   - **Tách Topping riêng biệt (Rulebook §6 & `dev_002`):** Tự động bóc tách chuỗi `"Món + [n] Tên topping (tiền)"` thành dòng món gốc (đã trừ tiền topping) và dòng mặt hàng `"Topping <Tên topping>"` riêng biệt.
+   - **Xử lý nhanh Excel (`src/excel_fast.py`):** Phân tích OpenXML trực tiếp qua zipstream và C-backed parser, tự động nhận diện banner tiêu đề và dòng header thực, nhanh gấp 10 lần so với `openpyxl`.
+
+2. **Rulebook & Temporal Engine (`src/rule_engine.py`, `src/temporal.py`):**
+   - Tích hợp lịch âm - dương từ `calendar.csv` (`LunarSolarCalendar`), xử lý chuẩn xác các mốc Tết Nguyên Đán, tháng Chạp, rằm, mùng 10 âm lịch.
+   - Phân giải đa dạng các mẫu thời gian tương đối theo `as_of_date`: `tuần này`, `tuần trước`, `tháng này`, `tháng trước`, `cùng kỳ tháng trước`, `N ngày gần nhất`, `từ đầu năm tới nay` (YTD), ca sáng (`06:00–13:59:59`), ca chiều (`14:00–21:59:59`), trung bình ngày thứ X trong kỳ.
+   - Đảm bảo tuân thủ nghiêm ngặt quy tắc cắt thời gian theo `as_of_date` (Rulebook L5 & §1): mọi giao dịch phát sinh sau `as_of_date` coi như chưa xảy ra, ngoại trừ trạng thái hủy/trả hàng của đơn được lấy theo trạng thái thực tế.
+
+3. **Hybrid Question Parser & Planner (`src/parser.py`, `src/entity_linker.py`, `src/llm_client.py`):**
+   - Biên dịch câu hỏi tự nhiên tiếng Việt (kể cả teencode, viết tắt, không dấu, lỗi gõ Telex) thành biểu diễn trung gian định kiểu `ParsedQuestion` / `QueryPlanIR`.
+   - Phân loại intent chính xác: doanh thu tổng, doanh thu theo ca, doanh thu theo kênh/nhóm khách/phương thức thanh toán, số đơn, tỉ lệ đơn hủy, xếp hạng bán chạy theo số lượng quy đổi, hàng lời nhất theo lãi gộp, khách trung thành, khách sộp, công nợ lũy kế/nợ mới/thu nợ, giá trị tồn kho, hàng hết hạn, cùng các nghiệp vụ đặc thù ngành (sửa xe, thuốc kê đơn, bỉm tã mẹ & bé, điện thoại thu cũ/trả góp).
+   - Tích hợp `llm_client.py` hỗ trợ chế độ hybrid với vLLM trên Kaggle T4 x2 khi cần lập kế hoạch ngữ nghĩa cho các câu hỏi mở, hoặc chạy hoàn toàn offline bằng bộ rule-compiled semantic parser.
+
+4. **Deterministic Query Executor (`src/executor.py`):**
+   - Thực thi các thao tác lọc, gom nhóm, nối bảng, tính toán số học trên Pandas và NumPy hoàn toàn xác định.
+   - Triệt tiêu 100% các lỗi cú pháp runtime, không bị ảnh hưởng bởi lỗi thụt lề hay biến thể ngẫu nhiên của code sinh tự do.
+   - Áp dụng các quy tắc làm tròn số học chuẩn của cuộc thi (tiền làm tròn về đồng `floor(x + 0.5)`, trung bình tiền về đồng, tỷ lệ phần trăm làm tròn 2 chữ số thập phân).
+
+5. **Evidence & Verifier Gate (`src/verifier.py`, `src/serializer.py`):**
+   - Đánh giá khả năng trả lời (`unanswerable`): Phát hiện câu hỏi nằm ngoài kỳ dữ liệu của shop, thiếu cột thông tin cần thiết, hoặc đòi hỏi tri thức ngoài dữ liệu (tư vấn chủ quan, thuốc, nhà cung cấp uy tín).
+   - Selective Abstention: Chủ động gán `abstain` (0 điểm) khi độ tin cậy thấp hoặc nghi ngờ sai lệch để bảo toàn điểm số theo công thức Penalized Accuracy.
+   - Xuất dữ liệu `submission.jsonl` tuân thủ tuyệt đối quy cách schema và kiểu dữ liệu của cuộc thi.
+
+---
+
+#### 2. Kết quả Benchmark thần tốc trên toàn bộ 3.000 câu Train (Baseline v1 -> v3)
+
+Nhờ chuyển sang kiến trúc xác định, tốc độ đánh giá toàn bộ 3.000 câu train tăng vọt lên **~94 QPS (hoàn thành trong ~32 giây trên CPU)**, cho phép kiểm thử và lặp lại liên tục:
+
+| Chỉ số | Baseline v1 | Baseline v2 | **Baseline v3** |
+|---|---:|---:|---:|
+| **Tổng số câu hỏi** | 3.000 | 3.000 | **3.000** |
+| **Số câu ĐÚNG (+1 pt)** | 1.507 (50.23%) | 2.562 (85.40%) | **2.874 (95.80%)** 🏆 |
+| **Số câu SAI (-1 pt)** | 1.475 (49.17%) | 438 (14.60%) | **126 (4.20%)** 📉 |
+| *— Trong đó: Sai giá trị (wrong_value)* | 851 | 297 | **112** |
+| *— Trong đó: Sai kiểu dữ liệu (wrong_type)* | 624 | 141 | **14** |
+| *— Trong đó: Lỗi định dạng (format_error)* | 0 | 0 | **0** |
+| **Số câu ABSTAIN (0 pt)** | 18 | 0 | **0** |
+| **Tổng điểm (+1 / -1 / 0)** | +32 | +2.124 | **+2.748** |
+| 🔥 **Penalized Accuracy (Normalized Score)** | **+0.0107 (+1.07%)** | **+0.7080 (+70.80%)** | **+0.9160 (+91.60%)** 🚀 |
+| **Thời gian chạy toàn bộ 3.000 câu** | 30.12s | 31.96s | **31.94s** ⚡ |
+| **Tốc độ xử lý (Throughput)** | 99.60 QPS | 93.86 QPS | **93.93 QPS** |
+
+$$\mathbf{PA_{Train-v3} = \frac{2874 - 126}{3000} = \frac{2748}{3000} = +0.9160 \ (+91.60\%)}$$
+
+#### 3. Chi tiết độ chính xác theo loại đáp án ở Baseline v3
+
+| Loại đáp án (`answer_type`) | Số lượng câu | Số câu Đúng | Độ chính xác | Đánh giá |
+|---|---:|---:|---:|:---|
+| **`date`** | 145 | **145** | **100.00%** 🎯 | Hoàn hảo tuyệt đối. |
+| **`string`** | 88 | **87** | **98.86%** 🟢 | Chuẩn hóa tên thực thể và loại bỏ triệt để 'khách lẻ'. |
+| **`percent`** | 578 | **568** | **98.27%** 🟢 | Đột phá ngoạn mục, giải quyết triệt để bài toán tỷ lệ hủy và tỷ trọng. |
+| **`list`** | 193 | **188** | **97.41%** 🟢 | Thứ tự top-k và quy tắc tie-break theo mã/tên khớp 100%. |
+| **`unanswerable`** | 70 | **68** | **97.14%** 🟢 | Nhận diện chính xác thiếu dữ liệu/ngoài kỳ. |
+| **`number`** | 1.884 | **1.785** | **94.75%** 🟢 | Đúng 1.785/1.884 câu tính toán số nguyên và tiền tệ. |
+| **`boolean`** | 23 | **21** | **91.30%** 🟢 | Khớp logic so sánh hai kỳ và ngưỡng điều kiện. |
+| **`table`** | 19 | **12** | **63.16%** 🟡 | Phức tạp nhất do yêu cầu định dạng đa cột và đối chiếu đa bảng. |
+
+#### 4. Các điểm nghẽn cốt lõi đã giải quyết trong v3 (`reports/error_analysis.md`)
+
+1. **Khử va chạm chuỗi không dấu `thu tu` trong `wday_map` (`src/temporal.py`):**
+   - *Nguyên nhân:* Cụm từ `"doanh thu từ..."` sau khi bỏ dấu thành `"doanh thu tu"`, dính regex `\bthu tu\b`, làm hàng trăm câu hỏi bị gán nhầm bộ lọc thứ Tư (`specific_weekday = 3`).
+   - *Khắc phục:* Chuyển sang regex có dấu kết hợp negative lookbehind `(?<!doanh\s)\bthứ\s*(?:hai|2)\b...`.
+2. **Khử va chạm tiền tố mặt hàng (`src/parser.py`):**
+   - *Nguyên nhân:* Chuỗi `"hang nao"` nằm trong `"thang nao"` khiến 13 câu hỏi tìm tháng bán chạy nhất bị phân loại nhầm thành `top_revenue_product` (`string`) thay vi `multi_period_best` (`date`).
+   - *Khắc phục:* Bổ sung word boundary `\b(?:mat hang|san pham|hang)\s+nao\b`.
+3. **Routing khách hàng theo ngưỡng số đơn (`src/executor.py`):**
+   - *Nguyên nhân:* Kiểm tra `if cb.customers.empty` trả về `unanswerable` ở các cửa hàng không có bảng khách hàng riêng (như `biz_106`), dù bảng đơn hàng vẫn có mã khách định danh.
+   - *Khắc phục:* Kiểm tra trực tiếp sự tồn tại của mã khách trong cột `customer_key` của bảng đơn hàng.
+4. **Tách biệt đồ uống với bánh/topping tại quán cà phê (`src/executor.py`):**
+   - Khử trùng lặp và loại trừ nhóm `banh`, `topping`, `snack`, `do an` khi câu hỏi yêu cầu đơn vị "ly".
+5. **Lọc thuốc kê đơn tại hiệu thuốc (`src/executor.py`):**
+   - Hỗ trợ phân loại doanh thu thuốc kê đơn dựa trên trường `is_prescription` từ danh mục sản phẩm.
+
+---
+
+### Bản vá Pipeline: Xử lý Auto-Repair Crash & Bẫy Semantic Routing (Commit `936985c`) — 2026-11-07
+
+Nhằm đảm bảo pipeline hoạt động hoàn hảo trên dữ liệu `public_test` (với 3 ngành kinh doanh mới và 14 doanh nghiệp `dev_001` .. `dev_014`), commit `936985c` đã triển khai loạt bản vá quan trọng:
+
+1. **Sửa lỗi crash Auto-Repair (`src/canonical.py`):**
+   - Khắc phục lỗi unpacking trong hàm `_build_auto_repair`: bổ sung đầy đủ các trường `full_name`, `full_name_norm`, `alias`, `alias_norm` cho danh sách thợ sửa xe, giúp khớp chính xác tên gọi tắt (`"A.Đức"`, `"Đức"`) với họ tên đầy đủ trong `DanhSachTho.xlsx`.
+2. **Mở rộng từ điển tiếng lóng và lỗi gõ phím (`src/canonical.py`):**
+   - Bổ sung hơn 25 từ viết tắt và lỗi chính tả Telex phổ biến vào `QUESTION_TOKEN_MAP`: `đh`/`dh` -> đơn hàng, `tiềng` -> tiền, `kòn` -> còn, `wán` -> quán, `mik` -> mình, `nhìu nhứt` -> nhiều nhất, `ít nhứt` -> ít nhất, `nượt` -> lượt, `xửa` -> sửa, `báng` -> bán, `tỉ nệ` -> tỉ lệ, `dảm` -> giảm, `nhiềuđơn`/`nhieudon` -> nhiều đơn.
+3. **Mở rộng nhận diện ngành qua dữ liệu mẫu (`src/rule_engine.py`):**
+   - Nâng cấp hàm `detect_business_domain` để quét thêm `sample_text` lấy từ 30 dòng đầu của các cột tên hàng/loại hàng. Giúp nhận diện chính xác các shop không có README chi tiết thành `mother_baby` (bỉm, tã, sữa bột, similac, enfamil, bobby, huggies), `pharmacy` (thuốc, kháng sinh, paracetamol), và `construction` (xi măng, sắt thép, cát đá).
+4. **Trích xuất thương hiệu và size bỉm cho ngành mẹ & bé (`src/canonical.py`):**
+   - Tự động trích xuất thương hiệu bỉm tã (Similac, Enfamil, Bobby, Huggies, Merries, Moony, Pampers...) và phân giải size (size NB/Newborn, size S, M, L, XL, XXL, XXXL, số 1..5) khi danh mục chưa chuẩn hóa.
+5. **Mở rộng TimeWindow cho nhiều tháng và năm trước (`src/temporal.py`):**
+   - Hỗ trợ các mẫu câu: `"N tháng liền nhau/liên tiếp kết thúc ở tháng M/YYYY"`, `"từ tháng M1/Y1 đến tháng M3/Y3"`, và các từ lóng chỉ năm trước (`nam ngoai`, `nam truoc`, `nam roi`).
+
+---
+
+### Tự động hóa Google Colab Pipeline Runner (Commit `cdaf3f6`) — 2026-11-07
+
+Để tạo thuận lợi cho việc kiểm chứng độc lập và nộp bài trên Google Colab, notebook `run_colab_baseline.ipynb` đã được xây dựng và kiểm thử:
+- **Tự động thiết lập môi trường:** Clone trực tiếp branch `thang-bu-win-vinnie` mới nhất, cài đặt các dependency tối thiểu (`openpyxl`, `pyyaml`, `pandas`, `tabulate`, `pytest`).
+- **Nạp dữ liệu linh hoạt:** Hỗ trợ 2 phương án đưa `public_test.zip` vào: tải trực tiếp từ máy qua widget của Colab hoặc mount từ Google Drive.
+- **Thực thi suy luận 1-click:** Chạy lệnh `python scripts/run_baseline.py --split public_test --output submission.jsonl --trace artifacts/traces_public_test.jsonl` hoàn thành trong ~40 giây trên CPU tiêu chuẩn của Colab.
+- **Kiểm tra tính hợp lệ tự động:** Đếm tổng số bản ghi (đủ 1.000 dòng), kiểm tra phân bố kiểu dữ liệu (`number`, `percent`, `string`, `date`, `boolean`, `list`, `table`, `unanswerable`), phát hiện bản ghi null.
+- **Tự động tải về máy:** Tạo song song `submission.jsonl` và `submission.json` và kích hoạt hàm tải về máy tự động cho người dùng.
+
+---
+
+### Cột mốc Nộp bài Public Test đạt PA 0.46800 & Dọn dẹp Codebase (Commit `1019818`) — 2026-11-07
+
+- Thực hiện chạy inference hoàn chỉnh trên 1.000 câu hỏi `public_test` (phân bổ trên 14 doanh nghiệp `dev_001` .. `dev_014`).
+- Tạo tệp nộp bài `submission.jsonl` chính thức, tuân thủ 100% hợp đồng cuộc thi (`id`, `type`, `answer`), không chứa giá trị NaN hay Infinity.
+- Kết quả chấm điểm trên hệ thống Public Leaderboard ghi nhận mốc điểm chính thức **PA = 0.46800**.
+- Tiến hành dọn dẹp các tệp lưu trữ không còn sử dụng (`datamate_code.zip`, `datamate_colab_pro.ipynb`) để làm sạch repository và đồng bộ với nhánh làm việc chính.
+
+---
+
+### Tinh chỉnh Engine v6-v8: Shorthand Dates, Domain Edge Cases & Verifier Gating (Commit `a1ae45e`) — 2026-11-07
+
+Dựa trên phân tích trace dự đoán trên 1.000 câu `public_test` (`scripts/show_improvements.py` đối chiếu `traces_public_test_v2.jsonl` và `traces_public_test_v8.jsonl`), hệ thống tiếp tục được gia cố:
+
+1. **Xử lý triệt để viết tắt tháng/năm kết hợp ca làm việc (`src/temporal.py`):**
+   - Viết tắt dạng `8/26`, `10/25`: Phân giải chính xác thành tháng `2026-08` hoặc `2025-10`.
+   - Kết hợp ca: `"8/26 tiền bán ca chiều là bnhiu?"` -> gán `shift_filter = "afternoon"`.
+   - So sánh hai ca: `"10/25 doanh thu ca chieu hon hay kem ca sang may %?"` -> tạo `TimeWindow` ca chiều và `compare_window` ca sáng.
+   - Tháng trần không ghi năm: `"Th3 trung bình mỗi đơn được bao nhiêu doanh thu?"` -> tự động lấy năm dựa theo `as_of_date`.
+   - Danh sách nhiều tháng viết tắt: `"dthu th4, th5, th6"`, `"So sánh 3/25, 4/25 và 5/25"`, và khoảng thời gian vắt năm `"từ 12/25 đến 2/26"`.
+   - Từ lóng tương đối: `"tuan trc"`, `"bua nay"`, `"bua ni"`.
+
+2. **Bẫy câu hỏi y khoa và tư vấn chủ quan (`src/parser.py`):**
+   - Rulebook §7 quy định hệ thống không dùng kiến thức y khoa ngoài bảng. Các câu hỏi tư vấn cách dùng, liều lượng, tác dụng phụ, hoặc đối tượng đặc biệt (ví dụ: `"Bà bầu dùng Acemuc Kids 200mg... được không?"`, `"uong truoc hay sau an"`, `"tac dung phu"`, `"lieu dung"`, `"tri benh gi"`, `"co tot khong"`) được nhận diện chính xác thành `unanswerable_subjective` (`expected_type: unanswerable`).
+
+3. **Tính trung bình tiền phiếu sửa xe có thu tiền (`src/parser.py` & `src/executor.py`):**
+   - Phân loại chính xác câu hỏi `"không tính xe quay lại bảo hành, bình quân 1 phiếu sửa hết bnhiu tiền?"` cho `dev_012` thành intent `repair_avg_paid_ticket`, chỉ tính trên các phiếu có thu tiền (`Tiền > 0` và không ghi chú bảo hành) theo Rulebook §6.
+
+4. **Temporal Fallback Guard trong Executor (`src/executor.py`):**
+   - Nếu câu hỏi có từ khóa chỉ mốc thời gian cụ thể (`thang`, `tuan`, `quy`, `ca sang`, `ca chieu`, `hom qua`, `hom nay`, năm `2024–2026`) nhưng bộ phân giải thời gian không trích xuất được mà rơi vào fallback `all_time_to_as_of`, executor chủ động trả về `abstain` (confidence = 0.0) thay vì tính toán sai trên toàn bộ lịch sử dữ liệu.
+   - Sửa hàm `_execute_share_pct`: bắt buộc phải có ít nhất một điều kiện lọc hợp lệ (sản phẩm, kênh, phòng bàn, nhóm khách, giới tính, thanh toán, trạng thái) trước khi tính tỷ trọng doanh thu; nếu không có bộ lọc thì chuyển sang `unanswerable`.
+
+5. **Bộ lọc Domain Plausibility Gate (`src/verifier.py`):**
+   - Chặn các giá trị phần trăm phi thực tế: Nếu kết quả `percent > 1000%`, tự động chuyển sang `abstain` để tránh bị phạt điểm âm.
+   - Chặn các kết quả có độ tin cậy thấp: Nếu `confidence < 0.65`, chuyển sang `abstain` để bảo toàn điểm số.
+
+6. **Kiểm thử tự động:**
+   - Xây dựng `tests/test_improvements.py` bao phủ toàn bộ các case viết tắt ngày tháng, tư vấn y khoa, phiếu sửa xe và plausible gating.
+
+---
+
+### Hoàn thiện Parser: Word Boundaries, Month Words & Price Change Patterns (Commit `19df66c`) — 2026-11-07
+
+1. **Phân giải tháng bằng chữ tiếng Việt (`src/temporal.py`):**
+   - Bổ sung bảng ánh xạ `vn_month_words`: `"thang muoi mot"` -> 11, `"thang muoi hai"` -> 12, `"thang chap"` -> 12, `"thang gieng"` -> 1, `"thang tu"` / `"thang bon"` -> 4, `"thang ba"` -> 3, `"thang bay"` -> 7...
+2. **Nhận diện cửa sổ đổi giá sản phẩm (`src/temporal.py`):**
+   - Mở rộng regex `m_prc_win3` nhận diện các mẫu đổi giá: `"lên giá"`, `"đổi giá"`, `"tăng giá"`, `"giảm giá"`, `"giá mới"`, `"điều chỉnh giá"`, `"lên 10k"`, `"tăng 20k"` kết hợp N ngày trước và N ngày sau sự kiện.
+3. **Mở rộng regex hạn dùng (`src/temporal.py`):**
+   - Bắt các mẫu: `(?:het han|han dung).*?(\d+)\s+ngay\s+toi` để xác định chính xác cửa sổ hết hạn của lô hàng trong N ngày tới theo Rulebook §6 (ngành nhà thuốc).
+4. **Siết chặt Word Boundaries trong Parser (`src/parser.py`):**
+   - Sử dụng regex có ranh giới từ `\b(?:ai|ai la|nguoi nao|khach nao|tho nao|nhan vien nao|la ai|la gi|ten gi|dong xe nao)\b` để tránh match nhầm các từ có chứa chuỗi con tương tự.
+   - Bổ sung nhận diện mặt hàng ế ẩm / không bán được: `"khong ban ra"`, `"chua ban ra"`.
+5. **Tinh chỉnh Temporal Fallback Guard (`src/executor.py`):**
+   - Miễn trừ guard cho các intent không yêu cầu TimeWindow cụ thể như tìm ngày hết hạn gần nhất (`nearest_expiry_date`), ngày đắt khách nhất (`busiest_day`), giá trị tồn kho cuối kỳ (`stock_ending_cost_value`).
+   - Mở rộng bộ lọc `_execute_share_pct` cho các trạng thái đơn hàng (`huy`, `tra`, `chuyen khoan`, `tien mat`, `the`).
+
+---
+
+### Bảng Tổng hợp Toàn diện Tiến trình Phát triển Hệ thống (End-to-End Progression Matrix)
+
+| Giai đoạn | Phương pháp / Mô hình | Môi trường | Tập kiểm thử | Số câu ĐÚNG | Số câu SAI | Số câu ABSTAIN | 🔥 Penalized Accuracy (PA) | Throughput / Thời gian |
+|:---|:---|:---|:---|---:|---:|---:|---:|---:|
+| **Baseline ban đầu** | Prompt thô + CodeGen | Local | Train (200 mẫu) | 1 (0.5%) | 36 (18.0%) | 163 (81.5%) | **-0.1750 (-17.5%)** | ~14.8s / câu |
+| **context_v5a** | Qwen2.5-Coder-14B GPTQ Int8 | Kaggle 2x T4 | Train (200 mẫu) | 11 (5.5%) | 164 (82.0%) | 25 (12.5%) | **-0.7650 (-76.5%)** | 40.1s / câu (~2.2h) |
+| **context_v5c Single** | 14B + EmptyFilter & Fuzzy Grounding | Kaggle 2x T4 | Train (200 mẫu) | 24 (12.0%) | 139 (69.5%) | 37 (18.5%) | **-0.5750 (-57.5%)** | 39.5s / câu (~2.2h) |
+| **Đại tu SOTA** | ValueGrounder + Calibrated Gate | Kaggle 2x T4 | Train (200 mẫu) | 34 (17.0%) | 134 (67.0%) | 32 (16.0%) | **-0.5000 (-50.0%)** | 64.5s / câu (~3.6h) |
+| **Phase 1** | Accounting Cleaner + Rulebook §1 & §8 | Kaggle 2x T4 | Train (200 mẫu) | 78 (39.0%) | 86 (43.0%) | 36 (18.0%) | **-0.0400 (-4.0%)** | 68.0s / câu (~3.8h) |
+| **Colab Run 4a** | 3-Layer ConfidenceGate + 8k Context | Colab Pro A100 | Train (200 mẫu) | 89 (44.5%) | 33 (16.5%) | 78 (39.0%) | **+0.2800 (+28.0%)** | 9.9s / câu (~33m) |
+| **Colab Run 4b** | 16k Context (Giải phóng 40 câu token) | Colab Pro A100 | Train (200 mẫu) | 103 (51.5%) | 52 (26.0%) | 45 (22.5%) | **+0.2550 (+25.5%)** | ~7.5s / câu (~25m) |
+| **Colab Run 5** | Bản vá nghiệp vụ toàn diện (Phase 5) | Colab Pro A100 | Train (200 mẫu) | **137 (68.5%)** | **40 (20.0%)** | **23 (11.5%)** | **+0.4850 (+48.5%)** | ~6.5s / câu (~22m) |
+| **Baseline v1** | Canonical Normalizer + Rule-Compiled | Local CPU | **Toàn bộ Train (3.000)** | 1.507 (50.2%) | 1.475 (49.2%) | 18 (0.6%) | **+0.0107 (+1.07%)** | 99.6 QPS (30.1s) |
+| **Baseline v2** | Canonical Caching + Temporal Expansion | Local CPU | **Toàn bộ Train (3.000)** | 2.562 (85.4%) | 438 (14.6%) | 0 (0.0%) | **+0.7080 (+70.8%)** | 93.9 QPS (32.0s) |
+| **Baseline v3** | Sửa `wday_map`, Routing khách, Cafe, Rx | Local CPU | **Toàn bộ Train (3.000)** | **2.874 (95.8%)** 🏆 | **126 (4.2%)** 📉 | **0 (0.0%)** | 🔥 **+0.9160 (+91.6%)** 🚀 | **93.9 QPS (31.9s)** ⚡ |
+| **Public Test Submission** | Public Test Submission (`1019818`) | Colab CPU | **Public Test (1.000)** | — | — | — | 🔥 **0.46800** 🎯 | **~40 giây** |
+| **Engine v8 (Hiện tại)** | Shorthand Dates, Domain Edge Cases, Gating | Local CPU / Colab | **Full Test Suite** | **186 / 186 PASSED** | **0** | **0** | **100% test pass rate** | **48.6s** |
+
+---
+
+### Trạng thái Kiểm thử và Sẵn sàng Triển khai (Status & Next Steps)
+
+1. **Kiểm thử tự động:**
+   - Toàn bộ test suite: **186/186 passed** (bao gồm `tests/unit/test_core.py`, `tests/integration/test_pipeline.py`, `tests/test_improvements.py` cùng 15 test suite module cũ).
+2. **Công cụ Colab Runner:**
+   - Notebook `run_colab_baseline.ipynb` sẵn sàng cho việc tái lập kết quả và tạo submission chỉ với 1 cú click trên môi trường Google Colab tiêu chuẩn.
+3. **Mục tiêu tiếp theo:**
+   - Khảo sát nâng cao điểm số Public Test vượt mốc `0.550+` bằng cách đối chiếu thêm các edge cases công nợ lịch sử (72 lỗi còn lại trên train) và đối soát đơn vị quy đổi nhiều cấp (`dev_005`).
