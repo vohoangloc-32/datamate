@@ -1,1 +1,1 @@
-# DataMate - Vietnamese Natural Language Question Answering over Tabular Data
+"""DataMate baseline package for Zalo AI Challenge 2026."""

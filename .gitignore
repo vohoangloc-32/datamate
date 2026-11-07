@@ -7,6 +7,12 @@ result/
 *.log
 node_modules/
 log.txt
-context_*/
-results_*/
-results*.zip
+
+# Competition data & cache (DO NOT COMMIT)
+train/
+public_test/
+*.zip
+*.pkl
+artifacts/
+submission.jsonl
+
