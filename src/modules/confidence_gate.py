@@ -305,7 +305,8 @@ class ConfidenceGate:
         # 4. Single-day relative questions missing lower bound or using wrong month-long range
         is_single_day = any(d in q_norm for d in ("hom nay", "hnay", "bua nay", "hom qua", "hqua", "bua qua"))
         is_range_or_inventory = any(k in q_norm for k in ("tu ", "den ", "khoang", "giai doan", "trong ")) or any(t in q_norm for t in ("ton", "kho", "con lai", "hang ton"))
-        if is_single_day and not is_range_or_inventory:
+        uses_snapshot_table = any(t in code.lower() for t in ("baocaotonkho", "ton_kho", "tonkho", "so_ton", "soton", "bang_ton", "danhsachsanpham", "danh_muc"))
+        if is_single_day and not is_range_or_inventory and not uses_snapshot_table:
             # Check for two timestamps 1 day apart (e.g. >= pd.Timestamp('2026-05-02') & < pd.Timestamp('2026-05-03'))
             m_ts = re.findall(r"pd\.Timestamp\(['\"](\d{4}-\d{2}-\d{2})['\"]\)", code)
             ts_1day_apart = False

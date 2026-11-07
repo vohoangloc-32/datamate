@@ -639,13 +639,22 @@ def patch_code_and_tables_for_rulebook(
         has_thanh_tien = any("Thành tiền" in df.columns for df in tables.values())
         if has_tong_tien and has_thanh_tien:
             patched = re.sub(
-                r"(merged|joined|merge_df|merged_df|df_merged)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
+                r"([A-Za-z0-9_]+(?:\[[^\]]*\])?)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
                 r"\1['Thành tiền'].sum()",
                 patched,
             )
 
     # Date boundary guard: <= pd.Timestamp('YYYY-MM-DD') cut off timestamps on that day
     patched = _fix_date_boundaries(patched)
+
+    # Clamp non-leap year Feb 29 (e.g. 2025-02-29 -> 2025-02-28)
+    def _clamp_feb29(m):
+        yr = int(m.group(1))
+        sep = m.group("sep")
+        if yr % 4 != 0 or (yr % 100 == 0 and yr % 400 != 0):
+            return f"{yr}{sep}02{sep}28"
+        return m.group(0)
+    patched = re.sub(r"\b(20\d{2})(?P<sep>[/-])02(?P=sep)29\b", _clamp_feb29, patched)
 
     if question_is_pure_revenue(question):
         has_injected_tong_tien_hang = any("Tổng tiền hàng" in df.columns for df in exec_tables.values())
@@ -667,11 +676,11 @@ def patch_code_and_tables_for_rulebook(
             patched = patched.replace("['TongTien']", "['Tien hang']")
             patched = patched.replace('["TongTien"]', '["Tien hang"]')
         has_tien_hang_truoc_giam = any(
-            "Tiền hàng trước giảm" in df.columns and any(c in df.columns for c in ("Tổng tiền", "TongTien", "Tổng sau giảm giá"))
+            "Tiền hàng trước giảm" in df.columns and any(c in df.columns for c in ("Tổng tiền", "TongTien", "Tổng sau giảm giá", "Tong tien", "Tong_tien"))
             for df in tables.values()
         )
         if has_tien_hang_truoc_giam:
-            for bad in ("Tổng tiền", "TongTien", "Tổng sau giảm giá"):
+            for bad in ("Tổng tiền", "TongTien", "Tổng sau giảm giá", "Tong tien", "Tong_tien"):
                 patched = patched.replace(f"['{bad}']", "['Tiền hàng trước giảm']")
                 patched = patched.replace(f'["{bad}"]', '["Tiền hàng trước giảm"]')
 

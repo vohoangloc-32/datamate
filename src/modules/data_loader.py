@@ -149,7 +149,8 @@ def _is_order_id_column(name: str) -> bool:
             "madon", "mahd", "sohd", "mahoadon", "sohoadon",
             "orderid", "orderno", "ordernumber", "machungtu",
             "sochungtu", "soct", "madh", "sodon", "mabill",
-            "sophieu", "maphieu", "magd",
+            "sophieu", "maphieu", "magd", "manhaphang",
+            "manhap", "madonnhap", "phieunhap", "donnhap",
         )
     )
 
@@ -196,7 +197,7 @@ def _fill_merged_order_metadata(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
+def _coerce_date_column(values: pd.Series, default_year: Optional[int] = None) -> Optional[pd.Series]:
     """Parse date-like columns, including mixed Excel serial-day and text dates."""
     if pd.api.types.is_datetime64_any_dtype(values):
         return values
@@ -232,6 +233,21 @@ def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
         is_bare_year = date_text.str.match(r"^\d{4}$", na=False)
         date_text_to_parse = date_text[~is_bare_year]
         if not date_text_to_parse.empty:
+            # Rulebook §8, line 113: Supply sheet year or modal year for bare DD/MM dates
+            target_year = default_year
+            if target_year is None:
+                yr_extract = values.astype(str).str.extract(r"\b(20\d{2})\b")[0].dropna()
+                if not yr_extract.empty:
+                    target_year = int(yr_extract.mode()[0])
+                elif excel_mask.any() and not result.dropna().empty:
+                    target_year = int(result.dropna().dt.year.mode()[0])
+            if target_year is not None:
+                date_text_to_parse = date_text_to_parse.str.replace(
+                    r"^\s*(\d{1,2})[/-](\d{1,2})\s*$",
+                    rf"\1/\2/{target_year}",
+                    regex=True,
+                )
+
             date_text_to_parse = date_text_to_parse.str.replace(
                 r"(?i)\bth(?:áng|g)\.?\s*",
                 "/",
@@ -256,6 +272,9 @@ def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
                 )
                 parsed_text.loc[iso_dates] = parsed_iso
 
+            # Clamp to plausible calendar years to avoid OutOfBoundsDatetime (e.g. year 1 AD)
+            valid_year_mask = parsed_text.dt.year.between(1950, 2100)
+            parsed_text.loc[~valid_year_mask] = pd.NaT
             result.loc[date_text_to_parse.index] = parsed_text
 
     valid_dates = result.dropna()
@@ -282,11 +301,11 @@ def _detect_encoding(filepath: str) -> str:
     return "utf-8"
 
 
-def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
+def _coerce_types(df: pd.DataFrame, default_year: Optional[int] = None) -> pd.DataFrame:
     """Try to coerce object/string columns to numeric or datetime where appropriate."""
     for col in df.columns:
         if _is_date_column(col):
-            parsed_dates = _coerce_date_column(df[col])
+            parsed_dates = _coerce_date_column(df[col], default_year=default_year)
             if parsed_dates is not None:
                 df[col] = parsed_dates
                 continue
@@ -365,8 +384,25 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
                         years = valid_dt.dt.year
                         if (years >= 2000).mean() > 0.8 and (years <= 2050).mean() > 0.8:
                             df[col] = dt
+                            continue
                 except Exception:
                     pass
+
+            # 4. If column remains string/object: clean whitespace and harmonize casing
+            mask = df[col].notna() & df[col].map(lambda x: isinstance(x, str))
+            if mask.any():
+                df.loc[mask, col] = (
+                    df.loc[mask, col]
+                    .astype(str)
+                    .str.replace(r"\s+", " ", regex=True)
+                    .str.strip()
+                )
+                s_non_null = df.loc[mask, col]
+                if 0 < s_non_null.str.casefold().nunique() < s_non_null.nunique() <= 1000:
+                    mode_map = {}
+                    for lower_val, grp in s_non_null.groupby(s_non_null.str.casefold()):
+                        mode_map[lower_val] = grp.value_counts().index[0]
+                    df.loc[mask, col] = s_non_null.str.casefold().map(mode_map)
     return df
 
 
@@ -466,8 +502,8 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                     for c, v in zip(df.columns, row0):
                         v_str = str(v).strip() if pd.notna(v) else ""
                         c_str = str(c).strip()
-                        c_lower = unicodedata.normalize("NFKD", c_str.casefold()).strip()
-                        if v_str and (c_str.startswith("Unnamed:") or c_lower in {"hang", "don", "tien"}):
+                        c_compact = _compact_col_name(c_str)
+                        if v_str and (c_str.startswith("Unnamed:") or c_compact in {"hang", "don", "tien"}):
                             clean_v = _normalize_col_name(v_str)
                             new_cols.append(clean_v)
                             if c_str.startswith("Unnamed:"):
@@ -483,7 +519,9 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
 
             df = remove_subheader_and_subtotal_rows(df)
             df = _fill_merged_order_metadata(df)
-            df = _coerce_types(df)
+            month = _monthly_sheet_period(sheet)
+            default_year = int(month.split("-")[0]) if month else None
+            df = _coerce_types(df, default_year=default_year)
             df = dedup_order_table_rows(df)
             # Use file_stem__sheet_name as key if multiple sheets
             key = f"{stem}__{sheet}" if len(xls.sheet_names) > 1 else stem
@@ -491,7 +529,6 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
             if raw_stem != stem:
                 raw_key = f"{raw_stem}__{sheet}" if len(xls.sheet_names) > 1 else raw_stem
                 result[raw_key] = df
-            month = _monthly_sheet_period(sheet)
             if month is not None:
                 monthly_sheets.append((sheet, month, df))
             logger.info("Loaded XLSX sheet '%s' from %s: %d rows × %d cols",
@@ -615,6 +652,153 @@ def _combine_split_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataF
     return tables
 
 
+def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """Relational denormalization & dimension/temporal bridging across tables."""
+    table_items = list(tables.items())
+
+    # Pass 1: FK aliasing across tables
+    for name_a, df_a in table_items:
+        if "__" in name_a:
+            continue
+        id_cols_a = [c for c in df_a.columns if _is_order_id_column(c)]
+        for name_b, df_b in table_items:
+            if name_a >= name_b or "__" in name_b:
+                continue
+            id_cols_b = [c for c in df_b.columns if _is_order_id_column(c)]
+            for ida in id_cols_a:
+                set_a = set(df_a[ida].dropna().astype(str))
+                if len(set_a) < 3:
+                    continue
+                for idb in id_cols_b:
+                    if ida == idb:
+                        continue
+                    set_b = set(df_b[idb].dropna().astype(str))
+                    if len(set_b) < 3:
+                        continue
+                    overlap = len(set_a & set_b)
+                    if overlap >= 3 and (overlap / min(len(set_a), len(set_b))) >= 0.5:
+                        if idb not in df_a.columns:
+                            df_a[idb] = df_a[ida]
+                        if ida not in df_b.columns:
+                            df_b[ida] = df_b[idb]
+
+    # Pass 2: Temporal propagation (Order/Invoice/Import Header -> Detail)
+    for name_a, df_a in table_items:
+        if "__" in name_a:
+            continue
+        order_ids_a = [c for c in df_a.columns if _is_order_id_column(c)]
+        date_cols_a = [
+            c for c in df_a.columns
+            if _is_date_column(c) and pd.api.types.is_datetime64_any_dtype(df_a[c])
+        ]
+        if not order_ids_a or not date_cols_a:
+            continue
+
+        for name_b, df_b in table_items:
+            if name_a == name_b or "__" in name_b:
+                continue
+            date_cols_b = [
+                c for c in df_b.columns
+                if _is_date_column(c) and pd.api.types.is_datetime64_any_dtype(df_b[c])
+            ]
+            if date_cols_b:
+                continue
+
+            for oid in order_ids_a:
+                if oid in df_b.columns:
+                    set_a = set(df_a[oid].dropna().astype(str))
+                    set_b = set(df_b[oid].dropna().astype(str))
+                    if len(set_a & set_b) >= 3 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                        for dcol in date_cols_a:
+                            if dcol not in df_b.columns:
+                                mapping = (
+                                    df_a.dropna(subset=[oid, dcol])
+                                    .drop_duplicates(subset=[oid])
+                                    .set_index(oid)[dcol]
+                                )
+                                df_b[dcol] = df_b[oid].map(mapping)
+
+    # Pass 3: Product Dimension Name propagation (Catalog -> Detail/Secondary)
+    for name_a, df_a in table_items:
+        if "__" in name_a:
+            continue
+        name_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh"))
+        ]
+        sku_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in ("sku", "mahang", "masp", "mathuoc", "mahh"))
+        ]
+        if not name_cols_a or not sku_cols_a:
+            continue
+
+        for name_b, df_b in table_items:
+            if name_a == name_b or "__" in name_b:
+                continue
+            name_cols_b = [
+                c for c in df_b.columns
+                if any(k in _compact_col_name(c) for k in ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh"))
+            ]
+            if name_cols_b:
+                continue
+
+            for sku_col in sku_cols_a:
+                if sku_col in df_b.columns:
+                    set_a = set(df_a[sku_col].dropna().astype(str))
+                    set_b = set(df_b[sku_col].dropna().astype(str))
+                    if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                        for ncol in name_cols_a:
+                            if ncol not in df_b.columns:
+                                mapping = (
+                                    df_a.dropna(subset=[sku_col, ncol])
+                                    .drop_duplicates(subset=[sku_col])
+                                    .set_index(sku_col)[ncol]
+                                )
+                                df_b[ncol] = df_b[sku_col].map(mapping)
+
+    # Pass 4: Customer Name dimension propagation (Customer Catalog -> Orders/Invoices)
+    for name_a, df_a in table_items:
+        if "__" in name_a:
+            continue
+        cust_id_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in ("makh", "makhach", "customerid"))
+        ]
+        cust_name_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in ("tenkh", "tenkhach", "khachhangten", "customername"))
+        ]
+        if not cust_id_cols_a or not cust_name_cols_a:
+            continue
+
+        for name_b, df_b in table_items:
+            if name_a == name_b or "__" in name_b:
+                continue
+            cust_name_cols_b = [
+                c for c in df_b.columns
+                if any(k in _compact_col_name(c) for k in ("tenkh", "tenkhach", "khachhangten", "customername"))
+            ]
+            if cust_name_cols_b:
+                continue
+
+            for cid in cust_id_cols_a:
+                if cid in df_b.columns:
+                    set_a = set(df_a[cid].dropna().astype(str))
+                    set_b = set(df_b[cid].dropna().astype(str))
+                    if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                        for cname in cust_name_cols_a:
+                            if cname not in df_b.columns:
+                                mapping = (
+                                    df_a.dropna(subset=[cid, cname])
+                                    .drop_duplicates(subset=[cid])
+                                    .set_index(cid)[cname]
+                                )
+                                df_b[cname] = df_b[cid].map(mapping)
+
+    return tables
+
+
 def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, pd.DataFrame]:
     """
     Load all data files from a business directory.
@@ -664,6 +848,7 @@ def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, p
         logger.warning("No data tables loaded from %s", business_dir)
     else:
         tables = _combine_split_tables(tables)
+        tables = _bridge_relational_tables(tables)
 
     if use_cache:
         _cache[business_dir] = tables
