@@ -332,7 +332,7 @@ def main():
 
     # Load predictions
     predictions = {}
-    with open(args.submission, "r", encoding="utf-8") as f:
+    with open(args.submission, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -341,7 +341,7 @@ def main():
 
     # Load references
     references = {}
-    with open(args.answers, "r", encoding="utf-8") as f:
+    with open(args.answers, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
