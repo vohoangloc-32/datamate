@@ -314,7 +314,7 @@ def resolve_question_time_window(
         return w_cur
 
     m_prc_win3 = re.search(
-        r"(?:len\s*gia|doi\s*gia|tang\s*gia|giam\s*gia|gia\s*moi|dieu\s*chinh\s*gia).*?(\d+)\s*ngay\s*(?:dau|ke\s*tu|sau).*?(\d+)\s*ngay\s*(?:ngay\s*|lien\s*)?truoc",
+        r"(?:len\s*gia|doi\s*gia|tang\s*gia|giam\s*gia|gia\s*moi|dieu\s*chinh\s*gia|len\s+\d+|tang\s+\d+).*?(\d+)\s*ngay\s*(?:dau|ke\s*tu|sau).*?(\d+)\s*ngay\s*(?:ngay\s*|lien\s*)?truoc",
         q_noacc,
     )
     if m_prc_win3:
@@ -404,7 +404,7 @@ def resolve_question_time_window(
 
     # "từ tháng M1/Y1 qua tháng M2/Y2 rồi tháng M3/Y3" or "từ tháng M1/Y1 đến tháng M3/Y3"
     m_mm3 = re.search(
-        r"(?<![\d/\\-])(?:tu\s+)?(?:(?:thang|th)\s*)?(\d{1,2})[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)\s*(?:den|toi|qua)\s*(?:het\s*)?(?:(?:thang|th)\s*)?(\d{1,2})[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)",
+        r"(?<![\d/\\-])(?:tu\s+)?(?:\b(?:thang|th|t)\s*)?(\d{1,2})[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)\s*(?:den|toi|qua)\s*(?:het\s*)?(?:\b(?:thang|th|t)\s*)?(\d{1,2})[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)",
         q_noacc,
     )
     if m_mm3:
@@ -478,7 +478,7 @@ def resolve_question_time_window(
         return TimeWindow(d1, d2, label="explicit_range", shift_filter=shift_filter, specific_weekday=specific_wday)
 
     # 5. Expiry window "hết hạn trong N ngày tới" (without explicit range)
-    m_exp_n = re.search(r"het\s+han\s+trong\s+(\d+)\s+ngay\s+toi", q_noacc)
+    m_exp_n = re.search(r"(?:het\s+han|han\s+dung).*?(\d+)\s+ngay\s+toi", q_noacc)
     if m_exp_n:
         n_d = int(m_exp_n.group(1))
         # Check if there is an explicit anchor date "tính tại ngày DD/MM/YYYY" or "theo tồn kho ngày DD/MM/YYYY"
@@ -579,10 +579,23 @@ def resolve_question_time_window(
                 w.compare_window = TimeWindow(s_dt, e_dt, label="morning_shift", shift_filter="morning")
             return w
 
-    # 9b. Bare Month ("tháng M", "thM", "th M") without explicit year
+    # 9b. Bare Month ("tháng M", "thM", "th M", "tháng ba") without explicit year
+    vn_month_words = [
+        ("thang muoi mot", 11), ("thang muoi hai", 12), ("thang muoi", 10),
+        ("thang mot", 1), ("thang hai", 2), ("thang ba", 3), ("thang tu", 4),
+        ("thang bon", 4), ("thang sau", 6), ("thang bay", 7), ("thang tam", 8),
+        ("thang chin", 9), ("thang chap", 12), ("thang gieng", 1),
+    ]
+    m_word_val = None
+    if not all_my:
+        for mw_k, mw_num in vn_month_words:
+            if mw_k in q_noacc:
+                m_word_val = mw_num
+                break
+
     m_bare_m = re.search(r"\b(?:thang|th)\s*([1-9]|1[0-2])\b", q_noacc)
-    if not all_my and m_bare_m:
-        m_val = int(m_bare_m.group(1))
+    if not all_my and (m_bare_m or m_word_val is not None):
+        m_val = m_word_val if m_word_val is not None else int(m_bare_m.group(1))
         y_val = as_of_date.year if m_val <= as_of_date.month else as_of_date.year - 1
         s_dt, e_dt = month_bounds(y_val, m_val)
         if (y_val, m_val) == (as_of_date.year, as_of_date.month):

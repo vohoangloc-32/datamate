@@ -224,19 +224,24 @@ def execute_question(
         return _unanswerable("Dữ liệu của cửa hàng không có cột giờ tạo đơn để phân biệt ca sáng/chiều.")
 
     # 2b. Temporal fallback guard: question specifies explicit period but temporal parser fell back to all_time_to_as_of
-    if tw.label == "all_time_to_as_of":
-        explicit_time_pats = (
-            "thang ", "th ", "ca sang", "ca chieu", "tuan ", "quy ",
-            "ngay ", "hom qua", "hqua", "hom nay", "bua nay", "bua ni",
-        )
-        has_time_term = any(k in q_nk for k in explicit_time_pats) or bool(re.search(r"\b202[456]\b|\b2[56]\b", q_nk))
-        if has_time_term:
-            return ExecutionResult(
-                answer_type="abstain",
-                value=None,
-                reason="Câu hỏi có mốc thời gian cụ thể nhưng không xác định được TimeWindow hợp lệ.",
-                confidence=0.0,
+    if tw.label == "all_time_to_as_of" and intent not in (
+        "nearest_expiry_date", "busiest_day_by_revenue", "busiest_day_by_orders",
+        "stock_ending_cost_value", "stock_ending_qty", "out_of_stock_product_count",
+        "expiring_batch_count", "expiring_product_list", "expiring_stock_cost",
+    ):
+        if not any(k in q_nk for k in ("ngay may", "ngay nao", "hom nao", "thang nao")):
+            explicit_time_pats = (
+                "thang ", "th ", "ca sang", "ca chieu", "tuan ", "quy ",
+                "ngay ", "hom qua", "hqua", "hom nay", "bua nay", "bua ni",
             )
+            has_time_term = any(k in q_nk for k in explicit_time_pats) or bool(re.search(r"\b202[456]\b|\b2[56]\b", q_nk))
+            if has_time_term:
+                return ExecutionResult(
+                    answer_type="abstain",
+                    value=None,
+                    reason="Câu hỏi có mốc thời gian cụ thể nhưng không xác định được TimeWindow hợp lệ.",
+                    confidence=0.0,
+                )
 
     # 3. Check period coverage against [data_start_date, data_end_date]
     # (Skip for future batch expiry queries and due date queries)
@@ -904,7 +909,7 @@ def _execute_share_pct(
         or bool(ent.customer_group_norm)
         or bool(ent.customer_gender)
         or bool(ent.payment_method_norm)
-        or bool(ent.order_status_filter)
+        or any(k in q_nk for k in ('huy', 'tra', 'chuyen khoan', 'tien mat', 'the'))
         or tw.shift_filter is not None
         or bool(ent.customer_key)
     )

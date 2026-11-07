@@ -418,7 +418,7 @@ def parse_question(
     # ------------------------------------------------------------------
     # 10. Unsold Products ('bị ế', 'không bán được cái nào')
     # ------------------------------------------------------------------
-    if re.search(r"\b(?:bi e|mat hang e|hang e)\b", q_nk) or any(k in q_nk for k in ("khong ban ra dc", "khong ban duoc", "chua ban duoc")):
+    if re.search(r"\b(?:bi e|mat hang e|hang e)\b", q_nk) or any(k in q_nk for k in ("khong ban ra dc", "khong ban duoc", "chua ban duoc", "khong ban ra", "chua ban ra")):
         if any(k in q_nk for k in ("bao nhieu", "bnhiu", "bn", "may mat hang", "co may", "dem giup", "dem so", "so mat hang")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unsold_product_count", "number", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unsold_product_list", "list", tw, ent)
@@ -641,7 +641,7 @@ def parse_question(
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unhandled_table", "abstain", tw, ent, confidence=0.0)
     if any(k in q_nk for k in ("ke giup", "liet ke", "nhung mat hang nao", "nhung mon nao", "nhung ai", "cac thang", "tung thang")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unhandled_list", "abstain", tw, ent, confidence=0.0)
-    if any(k in q_nk for k in ("ai ", "ai la", "nguoi nao", "khach nao", "tho nao", "nhan vien nao", "la ai", "la gi", "ten gi", "dong xe nao")):
+    if re.search(r"\b(?:ai|ai\s+la|nguoi\s+nao|khach\s+nao|tho\s+nao|nhan\s+vien\s+nao|la\s+ai|la\s+gi|ten\s+gi|dong\s+xe\s+nao)\b", q_nk):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unhandled_string", "abstain", tw, ent, confidence=0.0)
 
     return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "revenue_total", "number", tw, ent)
