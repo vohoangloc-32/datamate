@@ -276,12 +276,16 @@ _AOV_RE = re.compile(
     r"|doanh thu trung binh.*(?:don|bill|order)|dthu trung binh.*(?:don|bill|order)|doanh thu binh quan.*(?:don|bill|order)|dthu binh quan.*(?:don|bill|order))\b"
 )
 _PURE_REVENUE_RE = re.compile(
-    r"\b(doanh thu|dthu|revenue|ban duoc bao nhieu tien|ban dc bao nhieu tien"
-    r"|ban duoc bn tien|ban dc nhieu tien|mang ve bao nhieu doanh thu|mang ve bn dthu"
-    r"|mang ve bnhiu dthu|doanh thu binh quan)\b"
+    r"\b(doanh thu|dthu|revenue|ban (?:dc|duoc).*?(?:tien|bao nhieu|bn|nhiu)|thu (?:ve|duoc).*?tien|tong tien ban hang|tien ban hang|tien hang|ban.*bao nhieu tien)\b"
+)
+_MONETARY_AVG_RE = re.compile(
+    r"\b(gia nhap binh quan|nhap vao gia binh quan|gia ban binh quan|don gia binh quan"
+    r"|gia tri trung binh|dthu binh quan|doanh thu binh quan|tien trung binh"
+    r"|doanh thu trung binh|dthu trung binh|chi phi trung binh|trung binh moi don"
+    r"|binh quan moi don|gia binh quan|trung binh.*tien|binh quan.*tien|trung binh moi dot|binh quan moi dot)\b"
 )
 _DEBT_OR_PAID_RE = re.compile(
-    r"\b(no|cong no|da tra|da thu|thuc thu|con no|phai thu)\b"
+    r"\b(no|cong no|da tra|da thu|thuc thu|con no|phai thu|tra bot no|thu no)\b"
 )
 _SPECIFIC_CANCEL_REASON_RE = re.compile(
     r"\b(vi|ly do|li do|nguyen nhan|giao tre|het hang|doi y)\b"
@@ -310,6 +314,12 @@ def question_is_customer_ranking(question: str) -> bool:
 def question_is_average_order_value(question: str) -> bool:
     """True when the question asks for average value/revenue per order (Rulebook §3 line 48)."""
     return bool(_AOV_RE.search(normalize_text(question)))
+
+
+def question_is_monetary_average(question: str) -> bool:
+    """True when question asks for average/mean of monetary values (Rulebook §9 line 133)."""
+    q = normalize_text(question)
+    return bool(_MONETARY_AVG_RE.search(q)) and not bool(re.search(r"\b(ti le|ty le|phan tram|%|so luong|so don|so ngay)\b", q))
 
 
 def question_is_pure_revenue(question: str) -> bool:
@@ -359,6 +369,28 @@ def prepare_tables_for_question(
                 returned_ids = set(df[oid].dropna().unique())
                 if filter_status:
                     bad_order_ids.update(returned_ids)
+        # Rulebook §1 line 10: detect return quantity columns (e.g. BanHang_BanTheoLo, DonHang_Lo)
+        for col in df.columns:
+            c_comp = compact_identifier(col)
+            if any(k in c_comp for k in ("sltra", "soluongtra", "sltradvtcoban", "soluongtradvtcoban")):
+                s_numeric = pd.to_numeric(df[col], errors="coerce").fillna(0)
+                ret_mask = s_numeric > 0
+                if ret_mask.any():
+                    oid = find_order_id_column(df)
+                    if oid is not None:
+                        returned_ids = set(df.loc[ret_mask, oid].dropna().unique())
+                        if filter_status:
+                            bad_order_ids.update(returned_ids)
+            # Rulebook §1: detect negative quantity in sales lines (handwritten ledger return records)
+            elif any(k in c_comp for k in ("soluong", "sl", "qty", "quantity", "soluonghang")) and not any(k in c_comp for k in ("tra", "quy", "ton", "nhap")):
+                s_numeric = pd.to_numeric(df[col], errors="coerce").fillna(0)
+                neg_mask = s_numeric < 0
+                if neg_mask.any():
+                    oid = find_order_id_column(df)
+                    if oid is not None:
+                        neg_ids = set(df.loc[neg_mask, oid].dropna().unique())
+                        if filter_status:
+                            bad_order_ids.update(neg_ids)
 
     for name, df in tables.items():
         work = remove_subheader_and_subtotal_rows(df.copy())
@@ -394,14 +426,16 @@ def prepare_tables_for_question(
 
         out[name] = work
 
-    # Propagate excluded order IDs to detail tables sharing an order ID column
+    # Propagate excluded order IDs across all tables sharing any order ID column
     if filter_status and bad_order_ids:
+        bad_id_strs = {str(x).strip() for x in bad_order_ids if pd.notna(x)}
         for name, work in list(out.items()):
-            oid = find_order_id_column(work)
-            if oid is not None:
-                drop = work[oid].isin(bad_order_ids)
+            oid_cols = [c for c in work.columns if any(token in compact_identifier(c) for token in _ORDER_ID_TOKENS)]
+            for col in oid_cols:
+                drop = work[col].astype(str).str.strip().isin(bad_id_strs)
                 if drop.any():
-                    out[name] = work.loc[~drop].copy()
+                    work = work.loc[~drop].copy()
+            out[name] = work
 
     # Rulebook §1: Sync item line sums from detail tables into header tables
     detail_amount_cols = ("T.Tiền", "Thành tiền", "Amount", "Tiền bán", "Thanh tien", "ThanhTien")
@@ -421,7 +455,7 @@ def prepare_tables_for_question(
             d_orders = set(ddf[d_oid].dropna().unique())
             if len(d_orders.intersection(h_orders)) > 0.5 * len(d_orders):
                 line_col = next((c for c in detail_amount_cols if c in ddf.columns), None)
-                if line_col and "Tổng tiền hàng" not in hdf.columns:
+                if line_col and "Tổng tiền hàng" not in hdf.columns and "Tiền hàng trước giảm" not in hdf.columns:
                     line_sums = ddf.groupby(d_oid)[line_col].sum()
                     hdf["Tổng tiền hàng"] = hdf[h_oid].map(line_sums).fillna(0)
                     out[hname] = hdf
@@ -439,7 +473,7 @@ def prepare_tables_for_question(
                 if cname == hname or cdf.empty:
                     continue
                 c_id_col = next((c for c in cdf.columns if compact_identifier(c) in ("makh", "makhach", "makhachhang", "makhachmua", "customerid", "sokh", "makh")), None)
-                c_name_col = next((c for c in cdf.columns if compact_identifier(c) in ("tenkh", "tenkhach", "tenkhachhang", "customername", "hovaten")), None)
+                c_name_col = next((c for c in cdf.columns if compact_identifier(c) in ("tenkh", "tenkhach", "tenkhachhang", "customername", "hovaten", "kh", "khach", "khachhang", "khachlesi", "khachle") and c != c_id_col), None)
                 if c_id_col and c_name_col:
                     id_map = dict(zip(cdf[c_id_col], cdf[c_name_col]))
                     hdf["Tên khách hàng"] = hdf[cust_id_col].map(id_map).fillna(hdf[cust_id_col])
@@ -656,33 +690,62 @@ def patch_code_and_tables_for_rulebook(
         return m.group(0)
     patched = re.sub(r"\b(20\d{2})(?P<sep>[/-])02(?P=sep)29\b", _clamp_feb29, patched)
 
+    # Delivery trips deduplication (Rulebook §6 VLXD: each delivery trip of an order counts as one trip)
+    if any(k in qtext for k in ("dot giao", "luot giao", "xe da giao", "chuyen giao")):
+        for tname, df in exec_tables.items():
+            trip_col = next((c for c in df.columns if compact_identifier(c) in ("luotgiao", "langiao", "dotgiao")), None)
+            oid = find_order_id_column(df)
+            if trip_col and oid:
+                patched = re.sub(
+                    rf"(\b{tname}(?:\[.+?\])?)\.shape\[0\]",
+                    rf"\1.drop_duplicates(subset=['{oid}', '{trip_col}']).shape[0]",
+                    patched,
+                )
+                patched = re.sub(
+                    rf"len\(\s*(\b{tname}(?:\[.+?\])?)\s*\)",
+                    rf"\1.drop_duplicates(subset=['{oid}', '{trip_col}']).shape[0]",
+                    patched,
+                )
+
+    # Weighted Average for import price (Rulebook §5 line 65)
+    if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh", "don gia nhap")) and any(k in qtext for k in ("binh quan", "trung binh")):
+        for tname, df in exec_tables.items():
+            price_col = next((c for c in df.columns if compact_identifier(c) in ("dongia", "dongianhap", "gianhap")), None)
+            qty_col = next((c for c in df.columns if compact_identifier(c) in ("soluong", "sl", "slnhap", "soluongnhap")), None)
+            amt_col = next((c for c in df.columns if compact_identifier(c) in ("thanhtien", "cantrancc", "tonggiatrinhap")), None)
+            if price_col and qty_col:
+                if amt_col:
+                    patched = re.sub(
+                        rf"(\b{tname}(?:\[.+?\])?)\[\s*['\"]{price_col}['\"]\s*\]\.mean\(\)",
+                        rf"(\1['{amt_col}'].sum() / \1['{qty_col}'].sum())",
+                        patched,
+                    )
+                else:
+                    patched = re.sub(
+                        rf"(\b{tname}(?:\[.+?\])?)\[\s*['\"]{price_col}['\"]\s*\]\.mean\(\)",
+                        rf"((\1['{qty_col}'] * \1['{price_col}']).sum() / \1['{qty_col}'].sum())",
+                        patched,
+                    )
+
     if question_is_pure_revenue(question):
-        has_injected_tong_tien_hang = any("Tổng tiền hàng" in df.columns for df in exec_tables.values())
-        if has_injected_tong_tien_hang:
-            for old_col in ("Tổng bill", "Tong tien", "Tổng đơn", "Thanh toán", "Tổng sau giảm giá"):
-                patched = patched.replace(f"['{old_col}']", "['Tổng tiền hàng']").replace(f'["{old_col}"]', '["Tổng tiền hàng"]')
-        has_tong_tien_hang = any(
-            "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns
-            for df in tables.values()
-        )
-        if has_tong_tien_hang:
-            patched = patched.replace("['Tổng sau giảm giá']", "['Tổng tiền hàng']")
-            patched = patched.replace('["Tổng sau giảm giá"]', '["Tổng tiền hàng"]')
-        has_tien_hang = any(
-            "Tien hang" in df.columns and "TongTien" in df.columns
-            for df in tables.values()
-        )
-        if has_tien_hang:
-            patched = patched.replace("['TongTien']", "['Tien hang']")
-            patched = patched.replace('["TongTien"]', '["Tien hang"]')
+        # 1. First priority: if tables have 'Tiền hàng trước giảm' (pre-discount gross revenue)
         has_tien_hang_truoc_giam = any(
-            "Tiền hàng trước giảm" in df.columns and any(c in df.columns for c in ("Tổng tiền", "TongTien", "Tổng sau giảm giá", "Tong tien", "Tong_tien"))
-            for df in tables.values()
+            "Tiền hàng trước giảm" in df.columns for df in exec_tables.values()
         )
         if has_tien_hang_truoc_giam:
-            for bad in ("Tổng tiền", "TongTien", "Tổng sau giảm giá", "Tong tien", "Tong_tien"):
-                patched = patched.replace(f"['{bad}']", "['Tiền hàng trước giảm']")
-                patched = patched.replace(f'["{bad}"]', '["Tiền hàng trước giảm"]')
+            for bad in ("Tong tien", "Tong_tien", "Tổng tiền", "TongTien", "Tổng sau giảm giá", "Tổng bill", "Thanh toán"):
+                patched = patched.replace(f"['{bad}']", "['Tiền hàng trước giảm']").replace(f'["{bad}"]', '["Tiền hàng trước giảm"]')
+        else:
+            # 2. Injected or existing 'Tổng tiền hàng'
+            has_injected_tong_tien_hang = any("Tổng tiền hàng" in df.columns for df in exec_tables.values())
+            if has_injected_tong_tien_hang:
+                for old_col in ("Tổng bill", "Tong tien", "Tong_tien", "Tổng đơn", "Thanh toán", "Tổng sau giảm giá", "Phải thu"):
+                    patched = patched.replace(f"['{old_col}']", "['Tổng tiền hàng']").replace(f'["{old_col}"]', '["Tổng tiền hàng"]')
+            # 3. 'Tien hang'
+            has_tien_hang = any("Tien hang" in df.columns for df in exec_tables.values())
+            if has_tien_hang:
+                for bad in ("TongTien", "Tong tien", "Tong_tien", "Tổng tiền", "Tổng sau giảm giá"):
+                    patched = patched.replace(f"['{bad}']", "['Tien hang']").replace(f'["{bad}"]', '["Tien hang"]')
 
     return patched, exec_tables
 
@@ -719,7 +782,11 @@ def format_accounting_context(
             notes.append(
                 f"- Table `{name}` status column `{scol}`: {status_desc}."
             )
-        if "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns:
+        if "Tiền hàng trước giảm" in df.columns and "Tong tien" in df.columns:
+            notes.append(
+                f"- Table `{name}`: Use `'Tiền hàng trước giảm'` for gross revenue (Rulebook §1); do NOT use `'Tong tien'` or `'Đã thu'`."
+            )
+        elif "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns:
             notes.append(
                 f"- Table `{name}`: Use `'Tổng tiền hàng'` for revenue (Rulebook §1); do NOT use `'Tổng sau giảm giá'` or `'Khách đã trả'`."
             )
@@ -761,6 +828,26 @@ def format_accounting_context(
         notes.append(
             "- Unit Conversion (Rulebook §3 & §10): Khi xếp hạng bán chạy hoặc tính tổng số lượng, phải quy đổi về đơn vị cơ bản bằng bảng quy đổi (`DanhSachQuyDoi` / `don_vi_sp`)."
         )
+
+    # Rulebook §5 Unsold goods guidance
+    qtext = normalize_text(question)
+    if any(k in qtext for k in ("khong ban duoc", "hang e", "mat hang e", "ban ko dc mon nao")):
+        notes.append(
+            "- Hàng ế trong kỳ (Rulebook §5 line 69): Là các mặt hàng ĐÃ TỪNG BÁN trước kỳ (có trong đơn hàng trước ngày bắt đầu kỳ) nhưng trong kỳ có số lượng bán = 0: `len(set(df[df[date_col] < start_date][prod_col]) - set(df[(df[date_col] >= start_date) & (df[date_col] < end_date)][prod_col]))`. KHÔNG lấy từ danh mục hàng."
+        )
+
+    # Rulebook §5 Weighted average import price guidance
+    if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh")):
+        notes.append(
+            "- Giá nhập bình quân (Rulebook §5 line 65): Phải tính bình quân gia quyền theo số lượng nhập: `Tổng tiền nhập / Tổng số lượng nhập` (hoặc `(df['Số lượng'] * df['Đơn giá']).sum() / df['Số lượng'].sum()`), KHÔNG lấy `df['Đơn giá'].mean()`. Làm tròn về đồng."
+        )
+
+    # Rulebook §6 Active ingredient guidance
+    if any(k in qtext for k in ("hoat chat", "khe don")):
+        notes.append(
+            "- Hoạt chất & Thuốc kê đơn (Rulebook §6): Doanh thu theo hoạt chất là thuốc có hoạt chất khớp đúng như vậy trong danh mục thuốc. Thuốc phối hợp nhiều hoạt chất là một loại riêng, không tính vào từng hoạt chất riêng lẻ."
+        )
+
     if not notes:
         return None
     return "ACCOUNTING & RULEBOOK COLUMN NOTES:\n" + "\n".join(notes)

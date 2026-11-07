@@ -57,7 +57,10 @@ class Rulebook:
             "doanh thu", "ban chay", "cong no", "ton kho", "gia von",
             "lai gop", "lai rong", "don huy", "tra hang", "nhap hang",
             "khach hang", "khach le", "vat", "phi giao", "giam gia",
-            "tet", "ca sang", "ca chieu", "thuoc ke don", "het han"
+            "tet", "ca sang", "ca chieu", "thuoc ke don", "het han",
+            "gia nhap binh quan", "khong ban duoc", "hang e", "tra bot no",
+            "mua chiu", "dot giao", "luot giao", "hoat chat", "ke don",
+            "don gia binh quan", "gia binh quan"
         ]
 
         relevant = []
@@ -135,7 +138,19 @@ _CATEGORY_KEYWORDS = {
     ],
     "cost": [
         "giá vốn", "chi phí", "cost", "giá nhập", "vốn", "tiền nhập",
-        "phí", "giá mua", "weighted-average", "trung bình",
+        "phí", "giá mua", "weighted-average", "trung bình", "bình quân",
+    ],
+    "inventory": [
+        "tồn kho", "tồn cuối", "hàng ế", "không bán được", "chưa bán", "hết hạn",
+    ],
+    "delivery": [
+        "đợt giao", "lượt giao", "chuyến", "giao hàng",
+    ],
+    "pharma": [
+        "hoạt chất", "kê đơn", "thuốc kê đơn", "đơn thuốc",
+    ],
+    "debt": [
+        "trả bớt nợ", "thu nợ", "mua chịu", "công nợ", "còn nợ",
     ],
     "time": [
         "tháng", "tuần", "ngày", "năm", "quý", "week", "month",

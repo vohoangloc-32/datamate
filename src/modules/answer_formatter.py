@@ -289,11 +289,15 @@ def format_answer(
 
     if formatted_value is not None and answer_type == "number" and question:
         try:
-            from .accounting_cleaner import question_is_aov
-            if question_is_aov(question) and isinstance(formatted_value, (int, float)):
-                formatted_value = int(round(formatted_value))
-        except Exception:
-            pass
+            from .accounting_cleaner import (
+                question_is_average_order_value,
+                question_is_monetary_average,
+                round_half_up_vnd,
+            )
+            if (question_is_average_order_value(question) or question_is_monetary_average(question)) and isinstance(formatted_value, (int, float)):
+                formatted_value = round_half_up_vnd(formatted_value)
+        except Exception as e:
+            logger.warning("Error in monetary average rounding: %s", e)
 
     if formatted_value is None:
         logger.warning("Formatting produced None for type=%s, value=%r",

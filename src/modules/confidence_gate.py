@@ -382,6 +382,16 @@ class ConfidenceGate:
                 if num < 0.0 or num > 100.0:
                     penalties.append((0.70, f"rate_out_of_bounds_0_100={num}"))
 
+        # 5. Unsold goods question returning implausibly large count (> 30 items)
+        is_unsold = any(k in q_norm for k in ("hang e", "khong ban duoc", "khong ban dc", "chua ban duoc", "mat hang e", "san pham e", "khong ai mua"))
+        if is_unsold and ans_type == "number" and num > 30:
+            penalties.append((0.70, f"implausible_unsold_goods_count={num}"))
+
+        # 6. Single debt payment / collection question returning implausibly large currency (> 100M VND)
+        is_debt_payment = any(k in q_norm for k in ("tra bot no", "thu no", "khach tra no", "thanh toan no", "tra no"))
+        if is_debt_payment and ans_type == "number" and num > 100_000_000:
+            penalties.append((0.70, f"implausible_debt_payment={num}"))
+
         return penalties
 
     def _check_plausibility(self, answer: Dict[str, Any]) -> Optional[str]:

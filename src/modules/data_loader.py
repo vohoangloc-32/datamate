@@ -658,25 +658,25 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
 
     # Pass 1: FK aliasing across tables
     for name_a, df_a in table_items:
-        if "__" in name_a:
+        if df_a.empty:
             continue
         id_cols_a = [c for c in df_a.columns if _is_order_id_column(c)]
         for name_b, df_b in table_items:
-            if name_a >= name_b or "__" in name_b:
+            if df_a is df_b or name_a >= name_b or df_b.empty:
                 continue
             id_cols_b = [c for c in df_b.columns if _is_order_id_column(c)]
             for ida in id_cols_a:
                 set_a = set(df_a[ida].dropna().astype(str))
-                if len(set_a) < 3:
+                if len(set_a) < 2:
                     continue
                 for idb in id_cols_b:
                     if ida == idb:
                         continue
                     set_b = set(df_b[idb].dropna().astype(str))
-                    if len(set_b) < 3:
+                    if len(set_b) < 2:
                         continue
                     overlap = len(set_a & set_b)
-                    if overlap >= 3 and (overlap / min(len(set_a), len(set_b))) >= 0.5:
+                    if overlap >= 2 and (overlap / min(len(set_a), len(set_b))) >= 0.5:
                         if idb not in df_a.columns:
                             df_a[idb] = df_a[ida]
                         if ida not in df_b.columns:
@@ -684,7 +684,7 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
 
     # Pass 2: Temporal propagation (Order/Invoice/Import Header -> Detail)
     for name_a, df_a in table_items:
-        if "__" in name_a:
+        if df_a.empty:
             continue
         order_ids_a = [c for c in df_a.columns if _is_order_id_column(c)]
         date_cols_a = [
@@ -695,7 +695,7 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
             continue
 
         for name_b, df_b in table_items:
-            if name_a == name_b or "__" in name_b:
+            if df_a is df_b or name_a == name_b or df_b.empty:
                 continue
             date_cols_b = [
                 c for c in df_b.columns
@@ -708,7 +708,7 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
                 if oid in df_b.columns:
                     set_a = set(df_a[oid].dropna().astype(str))
                     set_b = set(df_b[oid].dropna().astype(str))
-                    if len(set_a & set_b) >= 3 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                    if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
                         for dcol in date_cols_a:
                             if dcol not in df_b.columns:
                                 mapping = (
@@ -718,83 +718,97 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
                                 )
                                 df_b[dcol] = df_b[oid].map(mapping)
 
-    # Pass 3: Product Dimension Name propagation (Catalog -> Detail/Secondary)
+    # Pass 3: Product Dimension propagation (Catalog -> Detail/Secondary)
+    sku_tokens = ("sku", "mahang", "masp", "mathuoc", "mahh")
+    name_tokens = ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh")
+    hoat_chat_tokens = ("hoatchat", "activeingredient", "hoatchatchinh")
+    ke_don_tokens = ("kedon", "thuocketheodon", "thuockedon", "bantheodon", "prescription", "theodon")
+    nhom_hang_tokens = ("nhomhang", "danhmuc", "category", "nhomsanpham", "maloaihang", "tenloaihang", "loaihang")
+    dvt_tokens = ("donvitinh", "dvt", "unit")
+
     for name_a, df_a in table_items:
-        if "__" in name_a:
+        if df_a.empty:
             continue
-        name_cols_a = [
+        sku_cols_a = [c for c in df_a.columns if any(k in _compact_col_name(c) for k in sku_tokens)]
+        name_cols_a = [c for c in df_a.columns if any(k in _compact_col_name(c) for k in name_tokens)]
+        dim_cols_a = [
             c for c in df_a.columns
-            if any(k in _compact_col_name(c) for k in ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh"))
+            if any(k in _compact_col_name(c) for k in (name_tokens + hoat_chat_tokens + ke_don_tokens + nhom_hang_tokens + dvt_tokens))
         ]
-        sku_cols_a = [
-            c for c in df_a.columns
-            if any(k in _compact_col_name(c) for k in ("sku", "mahang", "masp", "mathuoc", "mahh"))
-        ]
-        if not name_cols_a or not sku_cols_a:
+        if not dim_cols_a or (not sku_cols_a and not name_cols_a):
             continue
 
         for name_b, df_b in table_items:
-            if name_a == name_b or "__" in name_b:
-                continue
-            name_cols_b = [
-                c for c in df_b.columns
-                if any(k in _compact_col_name(c) for k in ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh"))
-            ]
-            if name_cols_b:
+            if df_a is df_b or name_a == name_b or df_b.empty:
                 continue
 
-            for sku_col in sku_cols_a:
-                if sku_col in df_b.columns:
-                    set_a = set(df_a[sku_col].dropna().astype(str))
-                    set_b = set(df_b[sku_col].dropna().astype(str))
-                    if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
-                        for ncol in name_cols_a:
-                            if ncol not in df_b.columns:
-                                mapping = (
-                                    df_a.dropna(subset=[sku_col, ncol])
-                                    .drop_duplicates(subset=[sku_col])
-                                    .set_index(sku_col)[ncol]
-                                )
-                                df_b[ncol] = df_b[sku_col].map(mapping)
+            join_pairs = []
+            for sa in sku_cols_a:
+                for sb in [c for c in df_b.columns if any(k in _compact_col_name(c) for k in sku_tokens)]:
+                    join_pairs.append((sa, sb))
+            if not join_pairs:
+                for na in name_cols_a:
+                    for nb in [c for c in df_b.columns if any(k in _compact_col_name(c) for k in name_tokens)]:
+                        join_pairs.append((na, nb))
 
-    # Pass 4: Customer Name dimension propagation (Customer Catalog -> Orders/Invoices)
+            for key_a, key_b in join_pairs:
+                set_a = set(df_a[key_a].dropna().astype(str))
+                set_b = set(df_b[key_b].dropna().astype(str))
+                if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                    for dcol in dim_cols_a:
+                        if dcol != key_a and dcol not in df_b.columns:
+                            mapping = (
+                                df_a.dropna(subset=[key_a, dcol])
+                                .drop_duplicates(subset=[key_a])
+                                .set_index(key_a)[dcol]
+                            )
+                            mapped_series = df_b[key_b].map(mapping)
+                            if any(k in _compact_col_name(dcol) for k in ke_don_tokens):
+                                mapped_series = mapped_series.fillna(False)
+                            df_b[dcol] = mapped_series
+
+    # Pass 4: Customer dimension propagation (Customer Catalog -> Orders/Invoices)
+    cust_id_tokens = ("makh", "makhach", "customerid", "makhachhang")
+    cust_dim_tokens = ("tenkh", "tenkhach", "khachhangten", "customername", "nhomkhach", "nhomkh", "loaihinhkhach")
     for name_a, df_a in table_items:
-        if "__" in name_a:
+        if df_a.empty:
             continue
         cust_id_cols_a = [
             c for c in df_a.columns
-            if any(k in _compact_col_name(c) for k in ("makh", "makhach", "customerid"))
+            if any(k in _compact_col_name(c) for k in cust_id_tokens)
         ]
-        cust_name_cols_a = [
+        cust_dim_cols_a = [
             c for c in df_a.columns
-            if any(k in _compact_col_name(c) for k in ("tenkh", "tenkhach", "khachhangten", "customername"))
+            if any(k in _compact_col_name(c) for k in cust_dim_tokens)
         ]
-        if not cust_id_cols_a or not cust_name_cols_a:
+        if not cust_id_cols_a or not cust_dim_cols_a:
             continue
 
         for name_b, df_b in table_items:
-            if name_a == name_b or "__" in name_b:
-                continue
-            cust_name_cols_b = [
-                c for c in df_b.columns
-                if any(k in _compact_col_name(c) for k in ("tenkh", "tenkhach", "khachhangten", "customername"))
-            ]
-            if cust_name_cols_b:
+            if df_a is df_b or name_a == name_b or df_b.empty:
                 continue
 
-            for cid in cust_id_cols_a:
-                if cid in df_b.columns:
-                    set_a = set(df_a[cid].dropna().astype(str))
-                    set_b = set(df_b[cid].dropna().astype(str))
+            cust_id_cols_b = [
+                c for c in df_b.columns
+                if any(k in _compact_col_name(c) for k in cust_id_tokens)
+            ]
+            for cida in cust_id_cols_a:
+                for cidb in cust_id_cols_b:
+                    set_a = set(df_a[cida].dropna().astype(str))
+                    set_b = set(df_b[cidb].dropna().astype(str))
                     if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
-                        for cname in cust_name_cols_a:
-                            if cname not in df_b.columns:
+                        if cida not in df_b.columns:
+                            df_b[cida] = df_b[cidb]
+                        if cidb not in df_a.columns:
+                            df_a[cidb] = df_a[cida]
+                        for cdim in cust_dim_cols_a:
+                            if cdim not in df_b.columns:
                                 mapping = (
-                                    df_a.dropna(subset=[cid, cname])
-                                    .drop_duplicates(subset=[cid])
-                                    .set_index(cid)[cname]
+                                    df_a.dropna(subset=[cida, cdim])
+                                    .drop_duplicates(subset=[cida])
+                                    .set_index(cida)[cdim]
                                 )
-                                df_b[cname] = df_b[cid].map(mapping)
+                                df_b[cdim] = df_b[cidb].map(mapping)
 
     return tables
 
@@ -847,6 +861,40 @@ def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, p
     if not tables:
         logger.warning("No data tables loaded from %s", business_dir)
     else:
+        # Check README.md for unit conversions if no conversion table exists
+        readme_file = data_dir / "README.md"
+        if readme_file.exists():
+            try:
+                content = readme_file.read_text(encoding="utf-8", errors="ignore")
+                has_conv_table = any(
+                    "quydoi" in _compact_col_name(tname)
+                    for tname in tables
+                )
+                if not has_conv_table:
+                    matches = re.findall(
+                        r"-\s+([^:\n]+):\s*1\s+([^=\n]+)\s*=\s*(\d+(?:[.,]\d+)?)\s*([^\n\r]+)",
+                        content,
+                    )
+                    if matches:
+                        rows = []
+                        for p_name, u_from, ratio_str, u_to in matches:
+                            ratio_val = float(ratio_str.replace(",", "."))
+                            if ratio_val.is_integer():
+                                ratio_val = int(ratio_val)
+                            rows.append({
+                                "Tên sản phẩm": p_name.strip(),
+                                "Tên hàng": p_name.strip(),
+                                "Đơn vị quy đổi": u_from.strip(),
+                                "Tỉ lệ quy đổi": ratio_val,
+                                "Đơn vị cơ bản": u_to.strip(),
+                            })
+                        df_conv = pd.DataFrame(rows)
+                        df_conv = _coerce_types(df_conv)
+                        tables["DanhSachQuyDoi"] = df_conv
+                        tables["danh_sach_quy_doi"] = df_conv
+            except Exception as e:
+                logger.warning("Failed to parse conversion from README.md: %s", e)
+
         tables = _combine_split_tables(tables)
         tables = _bridge_relational_tables(tables)
 
