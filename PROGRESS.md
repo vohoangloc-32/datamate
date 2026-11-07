@@ -698,7 +698,45 @@ Dựa trên phân tích trace dự đoán trên 1.000 câu `public_test` (`scrip
 | **Baseline v2** | Canonical Caching + Temporal Expansion | Local CPU | **Toàn bộ Train (3.000)** | 2.562 (85.4%) | 438 (14.6%) | 0 (0.0%) | **+0.7080 (+70.8%)** | 93.9 QPS (32.0s) |
 | **Baseline v3** | Sửa `wday_map`, Routing khách, Cafe, Rx | Local CPU | **Toàn bộ Train (3.000)** | **2.874 (95.8%)** 🏆 | **126 (4.2%)** 📉 | **0 (0.0%)** | 🔥 **+0.9160 (+91.6%)** 🚀 | **93.9 QPS (31.9s)** ⚡ |
 | **Public Test Submission** | Public Test Submission (`1019818`) | Colab CPU | **Public Test (1.000)** | — | — | — | 🔥 **0.46800** 🎯 | **~40 giây** |
-| **Engine v8 (Hiện tại)** | Shorthand Dates, Domain Edge Cases, Gating | Local CPU / Colab | **Full Test Suite** | **186 / 186 PASSED** | **0** | **0** | **100% test pass rate** | **48.6s** |
+| **Baseline v4 / Engine v10** | Sửa Mojibake, Unit Noun Filter, Auto-Repair, Brand Routing | Local CPU | **Toàn bộ Train (3.000)** | **2.886 (96.2%)** 🏆 | **114 (3.8%)** 📉 | **0 (0.0%)** | 🔥 **+0.9240 (+92.4%)** 🚀 | **91.1 QPS (32.9s)** ⚡ |
+| **Public Test v10** | Generated `submission.jsonl` (1.000 records) | Local CPU | **Public Test (1.000)** | — | — | — | 🎯 **Target >0.65+** | **87.3 QPS (11.5s)** ⚡ |
+
+---
+
+### Bước đột phá Engine v10: Sửa Mojibake Tên File, Generic Unit Noun & Auto-Repair Routing — 2026-11-07
+
+Qua quá trình đối soát pháp y chuyên sâu (forensic audit) trên 3.000 câu tập `train` và 1.000 câu tập `public_test` (đặc biệt là các doanh nghiệp `dev_001`, `dev_011`, `dev_012`, `dev_013`, `dev_014`, `biz_112`, `biz_115`, `biz_118`, `biz_130`), đã phát hiện và khắc phục triệt để 7 nhóm nguyên nhân cốt lõi gây mất điểm:
+
+1. **Khắc phục lỗi Mojibake tên file CP437 trên Windows (`src/loader.py`):**
+   - Khi giải nén file zip trên Windows, các tên file tiếng Việt có dấu bị mã hóa thành CP437 (ví dụ: `'Danh s├ích h├áng h├│a.xlsx'`, `'Bß╡║ng k├¼ phiß╡║├u giao h├áng.xlsx'`, `'Chi tiß╡║├t c├┤ng nß╡ùú theo hß╡║ín.xlsx'`).
+   - Hàm `_LogicalBaseName` và `load_business_package` trước đây không nhận diện được các tên file này, khiến danh mục sản phẩm và bảng giao hàng hoàn toàn bị bỏ sót tại `dev_001` (87 câu hỏi trong Public Test!), `biz_112`, `biz_115`, `biz_118`, `biz_130`.
+   - **Giải pháp:** Tích hợp bộ giải mã `repair_mojibake_name` (`name.encode('cp437').decode('utf-8')`) tự động phục hồi 100% bảng danh mục hàng hóa và phiếu giao hàng.
+
+2. **Khắc phục lỗi lọc định lượng chung Generic Unit Noun (`src/executor.py`):**
+   - Trong các shop điện thoại (`dev_011`, `dev_014`) và bán lẻ, câu hỏi thường dùng từ định lượng khẩu ngữ: `"Máy cũ 8/25 bán đc mấy chiếc vậy?"`, `"mấy cái"`, `"mấy máy"`. Bộ linker trích xuất `target_unit_norm = 'chiec'`, và bộ lọc dòng ép `lines['unit_norm'] == 'chiec'`.
+   - Do dữ liệu gốc để trống cột đơn vị tính (`unit_norm = ''`), toàn bộ các dòng hợp lệ bị loại bỏ và trả về kết quả sai là `0`.
+   - **Giải pháp:** Khi `target_unit_norm` thuộc nhóm từ loại chỉ định lượng chung (`chiec`, `cai`, `may`, `phan`, `suat`) mà dữ liệu bảng không chứa đơn vị này, không áp dụng lọc cứng `unit_norm`. Kết quả câu hỏi trên được sửa chính xác từ `0` thành `59`.
+
+3. **Đại tu toàn diện Domain Sửa chữa Xe máy (`dev_012`):**
+   - **Ánh xạ Model xe (`src/entity_linker.py` & `src/executor.py`):** Dữ liệu thực tế lưu trữ `"Wave Alpha"` và `"Wave RSX"`, nhưng linker cũ ép cả hai về `"Wave"`, dẫn đến việc truy vấn bảng không khớp và trả về 0 xe. Đã ánh xạ độc lập `"Wave Alpha"`, `"Wave RSX"`, và hỗ trợ tìm kiếm tiền tố khi người dùng hỏi chung `"Wave"`.
+   - **Sửa phân luồng câu hỏi đếm số lượt sửa (`src/parser.py`):** Cụm từ `"bao nhiêu lượt xe"`, `"mấy lượt xe"`, `"mấy phiếu"` trước đây bị regex match nhầm vào `"nhieu luot xe"` của intent `repair_top_mechanic_by_tickets` (trả về tên thợ kiểu string thay vì số lượng kiểu number). Đã bổ sung cờ `is_asking_count` để điều hướng chính xác về `repair_ticket_count`.
+   - **Bổ sung cụm từ doanh thu sửa xe:** Thêm `"tong tien ban hang"`, `"ban tong cong"`, `"tien hang"`, `"ra bao nhieu"` vào intent `repair_revenue_total`.
+
+4. **Sửa lỗi tính tỷ trọng đơn thu cũ đổi mới (`src/executor.py`):**
+   - Câu hỏi `[q_3a9665052018] Đơn có thu lại máy cũ 4-2026 chiếm mấy % tổng đơn?` trước đây không có điều kiện lọc trong `ent`, dẫn đến việc tập con bằng toàn bộ tập đơn và trả về kết quả sai `100%`.
+   - Đã bổ sung logic lọc đơn có `trade_in_amount > 0`, trả về kết quả chính xác `4.60%`.
+
+5. **Giải phóng rào chắn Gate sai cho Khách thành viên mới (`src/executor.py`):**
+   - Câu hỏi `[q_e36c0b269181] Số khách thành viên đăng ký mới th 5/26?` bị chặn tại bước kiểm tra capability `has_customer_group` vì cụm từ "thành viên" kích hoạt `ent.customer_group_norm = 'thanh vien'`.
+   - Đã miễn trừ điều kiện này khi intent là `new_member_count`, kích hoạt tra cứu trực tiếp ngày đăng ký `reg_date` trong `cb.customers` (kết quả: 15 khách).
+
+6. **Bổ sung Intent Thương hiệu Hàng đầu `top_selling_brand` (`src/parser.py` & `src/executor.py`):**
+   - Câu hỏi `[q_14a10f251fd0]` `"sữa bột số 2 của hãng nào bán được nhiều lon nhất"` hỏi tên hãng (string), nhưng trước đó bị match nhầm thành `product_qty_sold` (trả về number 92).
+   - Đã bổ sung intent `top_selling_brand`, trích xuất đúng thương hiệu dẫn đầu (`Vinamilk`) kết hợp bảo toàn bộ lọc quy cách `size_norm = 'so 2'`.
+
+7. **Mở rộng nhận diện tiền tệ và ngưỡng doanh thu ngày (`src/value_parser.py` & `src/parser.py`):**
+   - Hỗ trợ tiếng lóng tiền tệ: `"10 củ"`, `"10 cu"` -> $10.000.000$ VND.
+   - Nhận diện câu hỏi đếm ngày đạt ngưỡng: `"có mấy bữa tiệm bán được từ 10 củ trở lên"` điều hướng chính xác về `day_count_by_revenue_threshold`.
 
 ---
 

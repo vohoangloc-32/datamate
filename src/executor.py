@@ -164,7 +164,11 @@ def _filter_lines_in_window(
         mask &= lines["product_name"].str.lower().str.strip().str.endswith("(l)", na=False)
 
     if ent.target_unit_norm and not ent.product_key:
-        mask &= lines["unit_norm"] == ent.target_unit_norm
+        if ent.target_unit_norm in ("chiec", "cai", "may", "phan", "suat"):
+            if "unit_norm" in lines.columns and (lines["unit_norm"] == ent.target_unit_norm).any():
+                mask &= lines["unit_norm"] == ent.target_unit_norm
+        else:
+            mask &= lines["unit_norm"] == ent.target_unit_norm
 
     return lines[mask]
 
@@ -260,7 +264,7 @@ def execute_question(
         return _unanswerable("Dữ liệu không có cột kênh bán hàng.")
     if ent.room_area_norm and not cb.capabilities.get("has_room_area"):
         return _unanswerable("Dữ liệu không có cột khu vực/phòng bàn.")
-    if ent.customer_group_norm and not cb.capabilities.get("has_customer_group"):
+    if ent.customer_group_norm and not cb.capabilities.get("has_customer_group") and pq.intent != "new_member_count":
         return _unanswerable("Dữ liệu không có thông tin phân nhóm khách hàng.")
     if ent.customer_gender and not cb.capabilities.get("has_customer_gender"):
         return _unanswerable("Dữ liệu không có thông tin giới tính khách hàng.")
@@ -605,7 +609,7 @@ def execute_question(
     # ------------------------------------------------------------------
     # Product & Phone Model Rankings & Unsold Products
     # ------------------------------------------------------------------
-    if intent in ("top_selling_product", "top_revenue_product", "top_profit_product", "popular_product"):
+    if intent in ("top_selling_product", "top_revenue_product", "top_profit_product", "popular_product", "top_selling_brand"):
         return _execute_product_ranking(pq, cb, tw, as_of_dt, ent)
 
     if intent == "top_phone_model":
@@ -894,7 +898,10 @@ def _execute_share_pct(
         all_ord = _filter_orders_in_window(cb, tw, as_of_dt, ent=None, valid_only=True)
         if all_ord.empty:
             return ExecutionResult("percent", 0.0)
-        sub_ord = _filter_orders_in_window(cb, tw, as_of_dt, ent=ent, valid_only=True)
+        if any(k in q_nk for k in ("thu cu", "thu may cu", "thu lai may cu", "doi cu lay moi", "thu lai may")):
+            sub_ord = all_ord[all_ord["trade_in_amount"] > 0]
+        else:
+            sub_ord = _filter_orders_in_window(cb, tw, as_of_dt, ent=ent, valid_only=True)
         return ExecutionResult("percent", round_2dec(len(sub_ord) / len(all_ord) * 100.0))
 
     # 6. Default: Revenue share (% tổng doanh thu cả shop)
@@ -937,6 +944,7 @@ def _execute_product_ranking(
     ent_filter = LinkedEntities(
         category_norm=ent.category_norm,
         brand_norm=ent.brand_norm,
+        size_norm=ent.size_norm,
         active_ingredient_norm=ent.active_ingredient_norm,
         room_area_norm=ent.room_area_norm,
         channel_norm=ent.channel_norm,
@@ -949,6 +957,17 @@ def _execute_product_ranking(
 
     if lines.empty:
         return ExecutionResult("list" if pq.top_k > 1 else "string", [] if pq.top_k > 1 else "")
+
+    if pq.intent == "top_selling_brand":
+        grp = lines.groupby("brand", as_index=False)["base_qty"].sum().rename(columns={"base_qty": "metric"})
+        grp = grp[grp["brand"].str.strip() != ""]
+        grp["product_name"] = grp["brand"]
+        grp["tie_code"] = grp["brand"].apply(norm_key)
+        grp = grp.sort_values(by=["metric", "tie_code"], ascending=[False, True])
+        names = grp["product_name"].head(pq.top_k).tolist()
+        if pq.top_k > 1:
+            return ExecutionResult("list", names)
+        return ExecutionResult("string", names[0] if names else "")
 
     if pq.intent == "top_selling_product":
         grp = lines.groupby("product_key", as_index=False)["base_qty"].sum().rename(columns={"base_qty": "metric"})
@@ -1580,7 +1599,10 @@ def _execute_auto_repair(
     if ent.mechanic_norm:
         sub = sub[sub["mechanic_norm"] == ent.mechanic_norm]
     if ent.vehicle_model_norm:
-        sub = sub[sub["vehicle_model_norm"] == ent.vehicle_model_norm]
+        if ent.vehicle_model_norm == "wave":
+            sub = sub[sub["vehicle_model_norm"].str.startswith("wave")]
+        else:
+            sub = sub[sub["vehicle_model_norm"] == ent.vehicle_model_norm]
     if ent.license_plate:
         sub = sub[sub["license_plate"] == ent.license_plate]
     if ent.repair_work_norm:

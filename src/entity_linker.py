@@ -226,8 +226,8 @@ class EntityLinker:
             if m_plt:
                 res.license_plate = m_plt.group(1).upper()
             for v_cand, v_disp in (
-                ("air blade", "Air Blade"), ("sh mode", "SH Mode"), ("wave alpha", "Wave"),
-                ("wave rsx", "Wave"), ("wave", "Wave"), ("vision", "Vision"), ("lead", "Lead"),
+                ("air blade", "Air Blade"), ("sh mode", "SH Mode"), ("wave alpha", "Wave Alpha"),
+                ("wave rsx", "Wave RSX"), ("wave", "Wave"), ("vision", "Vision"), ("lead", "Lead"),
                 ("sirius", "Sirius"), ("exciter", "Exciter"), ("future", "Future"),
                 ("vario", "Vario"), ("janus", "Janus"), ("grande", "Grande"), ("winner", "Winner"),
             ):

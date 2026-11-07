@@ -112,6 +112,14 @@ def _read_sqlite_ro(sqlite_path: Path) -> Dict[str, pd.DataFrame]:
     return out
 
 
+def repair_mojibake_name(name: str) -> str:
+    """Repair CP437 mojibake for UTF-8 Vietnamese filenames on Windows."""
+    try:
+        return name.encode("cp437").decode("utf-8")
+    except Exception:
+        return name
+
+
 def _LogicalBaseName(filename: str) -> str:
     """Group multi-part files into a logical table name.
 
@@ -123,7 +131,8 @@ def _LogicalBaseName(filename: str) -> str:
     - 'BanHang_2025.xlsx', 'BanHang_2026.xlsx' -> 'BanHang'
     - 'DonHang_Lo_1.xlsx', 'DonHang_Lo_2.xlsx' -> 'DonHang_Lo'
     """
-    stem = Path(filename).stem
+    cleaned = repair_mojibake_name(filename)
+    stem = Path(cleaned).stem
     # BanHang_T1_2025 or BanHang_Thang01_2025
     stem = re.sub(r"_T(?:hang)?\d{1,2}_202\d$", "", stem, flags=re.IGNORECASE)
     # _2025, _2026, _1, _2
@@ -175,12 +184,13 @@ def load_business_package(
         if not fpath.is_file():
             continue
 
-        file_year = extract_year_from_name(fname)
-        logical_base = _LogicalBaseName(fname)
+        clean_fname = repair_mojibake_name(fname)
+        file_year = extract_year_from_name(clean_fname)
+        logical_base = _LogicalBaseName(clean_fname)
 
         if fname.endswith(".csv"):
             df = _read_csv_robust(fpath)
-            df["_source_file"] = fname
+            df["_source_file"] = clean_fname
             df["_sheet_name"] = ""
             df["_sheet_year"] = file_year
             grouped_parts.setdefault(logical_base, []).append(df)
@@ -188,14 +198,16 @@ def load_business_package(
         elif fname.endswith(".sqlite"):
             sql_tables = _read_sqlite_ro(fpath)
             for tname, df in sql_tables.items():
-                df["_source_file"] = fname
+                df["_source_file"] = clean_fname
                 df["_sheet_name"] = tname
                 df["_sheet_year"] = None
                 pkg.tables[tname] = df
 
         elif fname.endswith(".xlsx"):
             sheet_dfs = read_xlsx_dataframes(fpath)
-            pkg.sheet_tables[fname] = sheet_dfs
+            pkg.sheet_tables[clean_fname] = sheet_dfs
+            if clean_fname != fname:
+                pkg.sheet_tables[fname] = sheet_dfs
 
             # Check if this workbook is a multi-entity container (like DuLieuBanHang.xlsx,
             # DuLieuXuat.xlsx, Bao_cao_ban_hang.xlsx, QuanLy.xlsx, SoNo.xlsx, BanHang_TongHop_*.xlsx)
@@ -205,7 +217,7 @@ def load_business_package(
                 s0 = snames[0]
                 df = sheet_dfs[s0].copy()
                 s_year = extract_year_from_name(s0) or file_year
-                df["_source_file"] = fname
+                df["_source_file"] = clean_fname
                 df["_sheet_name"] = s0
                 df["_sheet_year"] = s_year
                 grouped_parts.setdefault(logical_base, []).append(df)
@@ -214,23 +226,24 @@ def load_business_package(
                     if sdf.empty:
                         continue
                     df = sdf.copy()
-                    s_year = extract_year_from_name(sname) or file_year
-                    df["_source_file"] = fname
-                    df["_sheet_name"] = sname
+                    clean_sname = repair_mojibake_name(sname)
+                    s_year = extract_year_from_name(clean_sname) or file_year
+                    df["_source_file"] = clean_fname
+                    df["_sheet_name"] = clean_sname
                     df["_sheet_year"] = s_year
 
                     # Is this a monthly sheet (e.g. 'Thang 02 2025', 'T04_2025', '04.2025', 'T7-2025')?
                     is_month_sheet = bool(
                         re.match(
                             r"^(?:tháng|thang|t)?\s*\d{1,2}[\s._-]+202\d$",
-                            sname.strip(),
+                            clean_sname.strip(),
                             flags=re.IGNORECASE,
                         )
                     )
-                    if is_month_sheet or sname == "Sổ bán hàng":
+                    if is_month_sheet or clean_sname == "Sổ bán hàng":
                         grouped_parts.setdefault(logical_base, []).append(df)
                     else:
-                        grouped_parts.setdefault(sname, []).append(df)
+                        grouped_parts.setdefault(clean_sname, []).append(df)
 
     for tname, df_list in grouped_parts.items():
         if len(df_list) == 1:

@@ -446,6 +446,11 @@ def parse_question(
             qid, biz_id, q_text, as_of_dt, "top_selling_product", "list" if top_k > 1 else "string", tw, ent, top_k=top_k, sort_asc=is_asc
         )
 
+    if any(k in q_nk for k in ("cua hang nao", "kua hang nao", "hang sua nao", "thuong hieu nao")):
+        return ParsedQuestion(
+            qid, biz_id, q_text, as_of_dt, "top_selling_brand", "list" if top_k > 1 else "string", tw, ent, top_k=top_k
+        )
+
     if re.search(r"\b(?:mat hang|san pham|mon|sp|hang|thuoc|loai)\s+nao\b", q_nk) and any(
         k in q_nk for k in ("doanh thu cao nhat", "doanh thu lon nhat", "nhieu tien nhat", "mang ve nhieu doanh thu", "mang lai nhieu doanh thu", "thu ve nhieu tien nhat")
     ):
@@ -562,14 +567,14 @@ def parse_question(
         )
 
     m_thr = re.search(
-        r"(?:co\s+)?(?:tien\s+hang|gia\s+tri|doanh\s+thu|tong\s+tien|don\s+hang|don)\s+(?:dat\s+|tu\s+|tren\s+|co\s+doanh\s+thu\s+(?:tu\s+)?|≥\s*|>=?\s*)?([\d.,]+\s*(?:dong|trieu|nghin|ngan|tr\d*|k|d|đ)?)\s*(?:tro\s+len|hon)?",
+        r"(?:co\s+)?(?:tien\s+hang|gia\s+tri|doanh\s+thu|tong\s+tien|don\s+hang|don|ban\s+duoc|thu\s+duoc|dthu)\s+(?:dat\s+|tu\s+|tren\s+|co\s+doanh\s+thu\s+(?:tu\s+)?|≥\s*|>=?\s*)?([\d.,]+\s*(?:dong|trieu|nghin|ngan|cu|tr\d*|k|d|đ)?)\s*(?:tro\s+len|hon)?",
         q_noacc,
     )
     if m_thr:
         val_t = parse_vn_number(m_thr.group(1))
         if val_t is not None and val_t >= 1000:
             op = "gt" if ("tren " in q_noacc and "tro len" not in q_noacc and "≥" not in q_text and ">=" not in q_text) else "gte"
-            if any(k in q_nk for k in ("bao nhieu ngay", "bnhiu ngay", "bn ngay", "may ngay", "so ngay")):
+            if any(k in q_nk for k in ("bao nhieu ngay", "bnhiu ngay", "bn ngay", "may ngay", "so ngay", "may bua", "bao nhieu bua", "bnhiu bua")):
                 return ParsedQuestion(
                     qid, biz_id, q_text, as_of_dt, "day_count_by_revenue_threshold", "number", tw, ent, threshold_value=float(val_t), threshold_op=op
                 )
@@ -695,8 +700,14 @@ def _parse_auto_repair_question(
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_repeat_vehicle", "string", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_repeat_vehicle_count", "number", tw, ent)
 
-    if "tho nao" in q_nk or "tho mo" in q_nk or "ai la tho" in q_nk or "nhan nhieu phieu" in q_nk or "nhieu luot xe" in q_nk or "nhieu xe nhat" in q_nk:
-        if any(k in q_nk for k in ("doanh thu", "dthu", "nhieu tien", "tien sua")):
+    is_asking_count = any(k in q_nk for k in ("bao nhieu", "bnhiu", "bn ", "may ", "so luot", "dem ", "nuot"))
+    is_top_mechanic = (
+        not is_asking_count
+        and ent.mechanic_norm is None
+        and any(k in q_nk for k in ("tho nao", "tho mo", "ai la tho", "nhan nhieu phieu", "nhieu luot xe nhat", "nhieu xe nhat", "cham chi nhat", "nhiet tinh nhat"))
+    )
+    if is_top_mechanic:
+        if any(k in q_nk for k in ("doanh thu", "dthu", "nhieu tien", "tien sua", "ra nhieu tien")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_mechanic_by_revenue", "string", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_mechanic_by_tickets", "string", tw, ent)
 
@@ -711,7 +722,7 @@ def _parse_auto_repair_question(
     if tw.compare_window is not None and any(k in q_nk for k in ("%", "phan tram", "tang hay giam", "thay doi", "tang giam")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_revenue_change_pct", "percent", tw, ent)
 
-    if any(k in q_nk for k in ("doanh thu", "dthu", "tien sua", "thu duoc bao nhieu tien", "ban duoc bao nhieu tien", "tong bao nhieu tien", "tien hang", "lam duoc tong")):
+    if any(k in q_nk for k in ("doanh thu", "dthu", "tien sua", "thu duoc bao nhieu tien", "ban duoc bao nhieu tien", "tong bao nhieu tien", "tien hang", "lam duoc tong", "tong tien ban hang", "ban tong cong", "ra bao nhieu", "thu ve bao nhieu")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_revenue_total", "number", tw, ent)
 
     return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_ticket_count", "number", tw, ent)

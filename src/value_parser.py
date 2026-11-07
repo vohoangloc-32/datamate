@@ -19,6 +19,7 @@ def parse_vn_number(val: Any) -> Optional[float]:
     - '25k', '18400k', '105,5k' -> 25000.0, 18400000.0, 105500.0
     - '1,01tr', '1,6256tr', '4,38tr' -> 1010000.0, 1625600.0, 4380000.0
     - '19tr990', '1tr2' -> 19990000.0, 1200000.0
+    - '10 củ', '10 cu' -> 10000000.0
     - '3 chai', '1 ly', '2.5 kg' -> 3.0, 1.0, 2.5
     """
     if val is None:
@@ -52,8 +53,8 @@ def parse_vn_number(val: Any) -> Optional[float]:
         frac = float("0." + frac_str)
         return sign * round((whole + frac) * 1_000_000, 4)
 
-    # Pattern 2: "<num>tr" or "<num> triệu" (e.g. "1,01tr", "1,6256tr", "16.56tr")
-    m_tr = re.match(r"^([\d.,]+)\s*tr(?:iệu|ieu)?$", s_low)
+    # Pattern 2: "<num>tr" or "<num> triệu" or "<num> củ" (e.g. "1,01tr", "1,6256tr", "10 củ")
+    m_tr = re.match(r"^([\d.,]+)\s*(?:tr(?:iệu|ieu)?|củ|cu)$", s_low)
     if m_tr:
         num_str = m_tr.group(1).replace(",", ".")
         try:
@@ -135,4 +136,3 @@ def extract_year_from_name(name: str) -> Optional[int]:
 
 
 parse_qty_and_unit = parse_quantity_and_unit
-
