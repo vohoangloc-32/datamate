@@ -223,6 +223,21 @@ def execute_question(
     if (tw.shift_filter is not None or (tw.compare_window and tw.compare_window.shift_filter is not None)) and not cb.capabilities.get("has_hour_of_day"):
         return _unanswerable("Dữ liệu của cửa hàng không có cột giờ tạo đơn để phân biệt ca sáng/chiều.")
 
+    # 2b. Temporal fallback guard: question specifies explicit period but temporal parser fell back to all_time_to_as_of
+    if tw.label == "all_time_to_as_of":
+        explicit_time_pats = (
+            "thang ", "th ", "ca sang", "ca chieu", "tuan ", "quy ",
+            "ngay ", "hom qua", "hqua", "hom nay", "bua nay", "bua ni",
+        )
+        has_time_term = any(k in q_nk for k in explicit_time_pats) or bool(re.search(r"\b202[456]\b|\b2[56]\b", q_nk))
+        if has_time_term:
+            return ExecutionResult(
+                answer_type="abstain",
+                value=None,
+                reason="Câu hỏi có mốc thời gian cụ thể nhưng không xác định được TimeWindow hợp lệ.",
+                confidence=0.0,
+            )
+
     # 3. Check period coverage against [data_start_date, data_end_date]
     # (Skip for future batch expiry queries and due date queries)
     if intent not in (
@@ -882,6 +897,19 @@ def _execute_share_pct(
     tot_rev = float(all_ord["revenue"].sum()) if not all_ord.empty else 0.0
     if tot_rev == 0:
         return _unanswerable("Tổng doanh thu bằng 0.")
+    has_filter = (
+        _has_product_level_filter(ent)
+        or bool(ent.channel_norm)
+        or bool(ent.room_area_norm)
+        or bool(ent.customer_group_norm)
+        or bool(ent.customer_gender)
+        or bool(ent.payment_method_norm)
+        or bool(ent.order_status_filter)
+        or tw.shift_filter is not None
+        or bool(ent.customer_key)
+    )
+    if not has_filter:
+        return _unanswerable("Không xác định được nhóm đối tượng cần tính tỉ trọng.")
     sub_rev = _compute_revenue(cb, tw, as_of_dt, ent, q_nk)
     return ExecutionResult("percent", round_2dec(sub_rev / tot_rev * 100.0))
 

@@ -273,11 +273,14 @@ def resolve_question_time_window(
 
     # 1. Price change +/- N days window ("từ ngày DD/MM/YYYY ... 14 ngày kể từ ngày ... so với 14 ngày trước")
     m_prc_win = re.search(
-        r"(\d{1,2})[/\-](\d{1,2})[/\-](202\d).*?(\d+)\s*ngay\s*(?:dau|ke\s*tu|sau).*?(\d+)\s*ngay\s*(?:ngay\s*|lien\s*)?truoc",
+        r"(\d{1,2})[/\-](\d{1,2})[/\-](202\d|\d{2}).*?(\d+)\s*ngay\s*(?:dau|ke\s*tu|sau|tu\s+bua|tu\s+hom|tu\s+ngay).*?(\d+)\s*ngay\s*(?:ngay\s*|lien\s*)?(?:truoc|trc)",
         q_noacc,
     )
     if m_prc_win:
-        d0 = dt.date(int(m_prc_win.group(3)), int(m_prc_win.group(2)), int(m_prc_win.group(1)))
+        y_p = int(m_prc_win.group(3))
+        if y_p < 100:
+            y_p += 2000
+        d0 = dt.date(y_p, int(m_prc_win.group(2)), int(m_prc_win.group(1)))
         n_days = int(m_prc_win.group(4))
         w_cur = TimeWindow(
             start_date=d0,
@@ -329,15 +332,21 @@ def resolve_question_time_window(
         return w_cur
 
     # 2. Multi-month list:
-    # e.g. "các tháng 10, 11, 12 năm 2025", "th5/2025, th6/2025, th7/2025", "3 tháng 9/2025 → 10/2025 → 11/2025"
+    # e.g. "các tháng 10, 11, 12 năm 2025", "th5/2025, th6/2025, th7/2025", "3/25, 4/25 và 5/25"
     m_mm1 = re.search(
-        r"(?:cac\s+thang|3\s+thang|thang|giua\s+thang|th)\s*(\d{1,2})(?:[/\-](202\d))?\s*(?:,|va|→|->)\s*(?:thang|th)?\s*(\d{1,2})(?:[/\-](202\d))?\s*(?:,|va|→|->)\s*(?:thang|th)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d)",
+        r"(?:cac\s+thang|3\s+thang|thang|giua\s+thang|th)?\s*(\d{1,2})(?:[/\-](202\d|\d{2}))?\s*(?:,|va|hay|→|->)\s*(?:thang|th)?\s*(\d{1,2})(?:[/\-](202\d|\d{2}))?\s*(?:,|va|hay|→|->)\s*(?:thang|th)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d|\d{2})",
         q_noacc,
     )
     if m_mm1:
         y3 = int(m_mm1.group(6))
+        if y3 < 100:
+            y3 += 2000
         y1 = int(m_mm1.group(2)) if m_mm1.group(2) else y3
+        if y1 < 100:
+            y1 += 2000
         y2 = int(m_mm1.group(4)) if m_mm1.group(4) else y3
+        if y2 < 100:
+            y2 += 2000
         m1, m2, m3 = int(m_mm1.group(1)), int(m_mm1.group(3)), int(m_mm1.group(5))
         wins = []
         for y_i, m_i in ((y1, m1), (y2, m2), (y3, m3)):
@@ -346,15 +355,42 @@ def resolve_question_time_window(
         res = TimeWindow(wins[0].start_date, wins[-1].end_date, label="multi_months", multi_windows=wins)
         return res
 
+    # Check general 3+ month mentions in query ("th4, th5, th6", "th 12/25, th 1/26, th 2/26")
+    m_pats_all = list(
+        re.finditer(
+            r"(?<![\d/\\-])(?:thang|th)\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d|\d{2})\b|(?<![\d/\\-])\b(0?[1-9]|1[0-2])[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)\b|\b(?:thang|th)\s*([1-9]|1[0-2])\b",
+            q_noacc,
+        )
+    )
+    if len(m_pats_all) >= 3:
+        wins = []
+        for m_p in m_pats_all:
+            if m_p.group(1):
+                m_v, y_v = int(m_p.group(1)), int(m_p.group(2))
+                if y_v < 100:
+                    y_v += 2000
+            elif m_p.group(3):
+                m_v, y_v = int(m_p.group(3)), int(m_p.group(4))
+                if y_v < 100:
+                    y_v += 2000
+            else:
+                m_v = int(m_p.group(5))
+                y_v = as_of_date.year if m_v <= as_of_date.month else as_of_date.year - 1
+            s_i, e_i = month_bounds(y_v, m_v)
+            wins.append(TimeWindow(s_i, min(e_i, as_of_date), label=f"{y_v:04d}-{m_v:02d}"))
+        return TimeWindow(wins[0].start_date, wins[-1].end_date, label="multi_months", multi_windows=wins)
+
     # "3 tháng liền nhau kết thúc ở tháng M/YYYY"
     m_mm2 = re.search(
-        r"(\d+)\s*thang\s*(?:lien\s*nhau|lien\s*tiep|lien)?\s*(?:ket\s*thuc|tinh\s*toi|tinh\s*den|den|toi)?\s*(?:o|vao|tai)?\s*(?:thang|th|t)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d)",
+        r"(\d+)\s*thang\s*(?:lien\s*nhau|lien\s*tiep|lien)?\s*(?:ket\s*thuc|tinh\s*toi|tinh\s*den|den|toi)?\s*(?:o|vao|tai)?\s*(?:thang|th|t)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d|\d{2})",
         q_noacc,
     )
     if m_mm2:
         n_m = int(m_mm2.group(1))
         cur_m = int(m_mm2.group(2))
         cur_y = int(m_mm2.group(3))
+        if cur_y < 100:
+            cur_y += 2000
         ym_list = []
         for _ in range(min(n_m, 12)):
             ym_list.append((cur_y, cur_m))
@@ -368,14 +404,20 @@ def resolve_question_time_window(
 
     # "từ tháng M1/Y1 qua tháng M2/Y2 rồi tháng M3/Y3" or "từ tháng M1/Y1 đến tháng M3/Y3"
     m_mm3 = re.search(
-        r"tu\s*(?:thang|th|t)?\s*(\d{1,2})(?:[/\-](202\d))?\s*(?:den|toi|qua)\s*(?:het\s*)?(?:thang|th|t)?\s*(\d{1,2})(?:[/\-](202\d))?(?:\s*roi\s*(?:thang|th|t)?\s*(\d{1,2}))?\s*(?:[/\-]|nam\s*)(202\d)",
+        r"(?<![\d/\\-])(?:tu\s+)?(?:(?:thang|th)\s*)?(\d{1,2})[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)\s*(?:den|toi|qua)\s*(?:het\s*)?(?:(?:thang|th)\s*)?(\d{1,2})[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)",
         q_noacc,
     )
     if m_mm3:
-        end_y = int(m_mm3.group(6))
-        y1 = int(m_mm3.group(2)) if m_mm3.group(2) else end_y
         m1 = int(m_mm3.group(1))
-        end_m = int(m_mm3.group(5)) if m_mm3.group(5) else int(m_mm3.group(3))
+        y1 = int(m_mm3.group(2))
+        if y1 < 100:
+            y1 += 2000
+
+        end_m = int(m_mm3.group(3))
+        end_y = int(m_mm3.group(4))
+        if end_y < 100:
+            end_y += 2000
+
         wins = []
         cy, cm = y1, m1
         while (cy, cm) <= (end_y, end_m) and len(wins) < 12:
@@ -446,18 +488,24 @@ def resolve_question_time_window(
 
     # 6. Cumulative / Point-in-time explicit date ("tính đến hết ngày DD/MM/YYYY", "tại ngày DD/MM/YYYY", "cuối ngày DD/MM/YYYY", "hết ngày DD/MM/YYYY")
     m_cum = re.search(
-        r"(?:tinh\s+den\s+het|den\s+het|toi\s+het|het|tai|cuoi|theo\s+ton\s+kho|den)\s*(?:ngay\s+)?(\d{1,2})[/\-](\d{1,2})[/\-](202\d)",
+        r"(?:tinh\s+den\s+het|den\s+het|toi\s+het|het|tai|cuoi|theo\s+ton\s+kho|den|toi)\s*(?:ngay\s+)?(\d{1,2})[/\-](\d{1,2})[/\-](202\d|\d{2})",
         q_noacc,
     )
     if m_cum:
-        d_target = dt.date(int(m_cum.group(3)), int(m_cum.group(2)), int(m_cum.group(1)))
+        y_cum = int(m_cum.group(3))
+        if y_cum < 100:
+            y_cum += 2000
+        d_target = dt.date(y_cum, int(m_cum.group(2)), int(m_cum.group(1)))
         start_d = data_start_date if data_start_date else dt.date(2025, 1, 1)
         return TimeWindow(start_d, d_target, label="cumulative_date", is_cumulative=True, shift_filter=shift_filter)
 
     # 7. Single explicit date ("ngày DD/MM/YYYY", "hôm DD/MM/YYYY")
-    m_single_dt = re.search(r"(?:ngay|hom|vao)\s+(\d{1,2})[/\-](\d{1,2})[/\-](202\d)", q_noacc)
+    m_single_dt = re.search(r"(?:ngay|hom|vao)\s+(\d{1,2})[/\-](\d{1,2})[/\-](202\d|\d{2})\b", q_noacc)
     if m_single_dt and "thang" not in q_noacc:
-        d_target = dt.date(int(m_single_dt.group(3)), int(m_single_dt.group(2)), int(m_single_dt.group(1)))
+        y_single = int(m_single_dt.group(3))
+        if y_single < 100:
+            y_single += 2000
+        d_target = dt.date(y_single, int(m_single_dt.group(2)), int(m_single_dt.group(1)))
         return TimeWindow(d_target, d_target, label="single_date", shift_filter=shift_filter)
 
     # 8. Explicit Quarter + Year ("quý Q/YYYY", "Q1/2026", "quý Q năm YYYY") — MUST run before Month + Year!
@@ -475,11 +523,11 @@ def resolve_question_time_window(
             w.compare_window = TimeWindow(ps, pe, label=f"Q{pq_q}/{pq_y}")
         return w
 
-    # 9. Explicit Month + Year ("tháng M/YYYY", "thM/YYYY", "M-YYYY", "06/2026", "tháng M năm YYYY", "th M/YY")
+    # 9. Explicit Month + Year ("tháng M/YYYY", "thM/YYYY", "M-YYYY", "06/2026", "tháng M năm YYYY", "th M/YY", "M/YY")
     # Note: check comparison patterns like "tháng M/YYYY so với tháng liền trước" or two explicit months
     all_my = list(
         re.finditer(
-            r"(?:thang|th|t)\s*(\d{1,2})\s*(?:[/\-]|nam\s+)(202\d|\d{2})\b|\b(0?[1-9]|1[0-2])[/\-](202\d)\b",
+            r"(?:thang|th|t)\s*(\d{1,2})\s*(?:[/\-]|nam\s+)(202\d|\d{2})\b|(?<![\d/\\-])\b(0?[1-9]|1[0-2])[/\-](202\d|\d{2})(?!\s*[/\\-]\s*\d)\b",
             q_noacc,
         )
     )
@@ -488,10 +536,12 @@ def resolve_question_time_window(
             if m_obj.group(1):
                 mv = int(m_obj.group(1))
                 yv = int(m_obj.group(2))
-                if yv < 100:
-                    yv += 2000
-                return mv, yv
-            return int(m_obj.group(3)), int(m_obj.group(4))
+            else:
+                mv = int(m_obj.group(3))
+                yv = int(m_obj.group(4))
+            if yv < 100:
+                yv += 2000
+            return mv, yv
 
         m_val, y_val = _extract_my(all_my[0])
         if 1 <= m_val <= 12:
@@ -517,7 +567,7 @@ def resolve_question_time_window(
             if (y_val, m_val) == (as_of_date.year, as_of_date.month):
                 e_dt = min(e_dt, as_of_date)
             w = TimeWindow(s_dt, e_dt, label=f"{y_val:04d}-{m_val:02d}", shift_filter=shift_filter, specific_weekday=specific_wday)
-            if any(k in q_noacc for k in ("thang lien truoc", "thang truoc do", "thang truoc", "thang roi", "th truoc", "th roi", "so voi thang", "so vs thang", "so vs th")):
+            if any(k in q_noacc for k in ("thang lien truoc", "thang truoc do", "thang truoc", "thang trc", "thang roi", "th truoc", "th trc", "th roi", "so voi thang", "so vs thang", "so vs th")):
                 py, pm = prev_month_ym(y_val, m_val)
                 ps, pe = month_bounds(py, pm)
                 w.compare_window = TimeWindow(ps, pe, label=f"{py:04d}-{pm:02d}")
@@ -528,6 +578,27 @@ def resolve_question_time_window(
                 w.shift_filter = "afternoon"
                 w.compare_window = TimeWindow(s_dt, e_dt, label="morning_shift", shift_filter="morning")
             return w
+
+    # 9b. Bare Month ("tháng M", "thM", "th M") without explicit year
+    m_bare_m = re.search(r"\b(?:thang|th)\s*([1-9]|1[0-2])\b", q_noacc)
+    if not all_my and m_bare_m:
+        m_val = int(m_bare_m.group(1))
+        y_val = as_of_date.year if m_val <= as_of_date.month else as_of_date.year - 1
+        s_dt, e_dt = month_bounds(y_val, m_val)
+        if (y_val, m_val) == (as_of_date.year, as_of_date.month):
+            e_dt = min(e_dt, as_of_date)
+        w = TimeWindow(s_dt, e_dt, label=f"{y_val:04d}-{m_val:02d}", shift_filter=shift_filter, specific_weekday=specific_wday)
+        if any(k in q_noacc for k in ("thang lien truoc", "thang truoc do", "thang truoc", "thang trc", "thang roi", "th truoc", "th trc", "th roi", "so voi thang", "so vs thang", "so vs th")):
+            py, pm = prev_month_ym(y_val, m_val)
+            ps, pe = month_bounds(py, pm)
+            w.compare_window = TimeWindow(ps, pe, label=f"{py:04d}-{pm:02d}")
+        elif any(k in q_noacc for k in ("cung ky nam truoc", "nam ngoai", "nam truoc", "nam roi", "cung thang nam roi", "cung ky nam roi", "thang nam ngoai")):
+            ps, pe = month_bounds(y_val - 1, m_val)
+            w.compare_window = TimeWindow(ps, pe, label=f"{y_val-1:04d}-{m_val:02d}")
+        elif has_both_shifts:
+            w.shift_filter = "afternoon"
+            w.compare_window = TimeWindow(s_dt, e_dt, label="morning_shift", shift_filter="morning")
+        return w
 
     # 10. Last N days ("N ngày gần nhất", "N ngày qua", "N ngày vừa qua")
     m_ndays = re.search(r"(\d+)\s*ngay\s*(?:gan\s*nhat|qua|vua\s*qua|gan\s*day)", q_noacc)
@@ -573,7 +644,7 @@ def resolve_question_time_window(
     if "tuan nay" in q_noacc or "tuan ni" in q_noacc:
         mon = as_of_date - dt.timedelta(days=as_of_date.weekday())
         w = TimeWindow(mon, as_of_date, label="this_week", shift_filter=shift_filter, specific_weekday=specific_wday)
-        if "tuan truoc" in q_noacc or "tuan roi" in q_noacc:
+        if any(k in q_noacc for k in ("tuan truoc", "tuan trc", "tuan roi")):
             p_mon = mon - dt.timedelta(days=7)
             p_sun = mon - dt.timedelta(days=1)
             w.compare_window = TimeWindow(p_mon, p_sun, label="last_week")
@@ -582,7 +653,7 @@ def resolve_question_time_window(
             w.compare_window = TimeWindow(mon, as_of_date, label="morning_shift", shift_filter="morning")
         return w
 
-    if any(k in q_noacc for k in ("tuan truoc", "tuan roi", "tuan vua roi")):
+    if any(k in q_noacc for k in ("tuan truoc", "tuan trc", "tuan roi", "tuan vua roi")):
         mon_this = as_of_date - dt.timedelta(days=as_of_date.weekday())
         p_mon = mon_this - dt.timedelta(days=7)
         p_sun = mon_this - dt.timedelta(days=1)

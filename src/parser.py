@@ -38,6 +38,23 @@ SUBJECTIVE_PATTERNS = [
     "chu dao",
     "quy men nhat",
     "nen uong moi lan may vien",
+    "dung duoc khong",
+    "uong duoc khong",
+    "xai duoc khong",
+    "co dung duoc",
+    "co uong duoc",
+    "ba bau",
+    "phu nu mang thai",
+    "lieu dung",
+    "cach dung",
+    "tac dung phu",
+    "chong chi dinh",
+    "tri benh gi",
+    "chua benh gi",
+    "uong truoc hay sau an",
+    "uong vao luc nao",
+    "co tot khong",
+    "co hai khong",
 ]
 
 CANCEL_REASON_PATTERNS = [
@@ -259,10 +276,10 @@ def parse_question(
             qid, biz_id, q_text, as_of_dt, "debt_over_n_days", "number", tw, ent, debt_age_days=int(m_debt_age.group(1))
         )
 
-    if any(k in q_nk for k in ("con no", "cong no", "chua tra het no", "dang no")):
+    if any(k in q_nk for k in ("con no", "cong no", "chua tra het no", "dang no", "thieu tien", "no chua thu", "khach no", "chua tra", "chua dong", "tien no")):
         if any(k in q_nk for k in ("moi nguoi", "tung nguoi", "kem so tien", "va so no", "cho bang")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "debt_top_customers_table", "table", tw, ent, top_k=max(top_k, 3))
-        if any(k in q_nk for k in ("bao nhieu khach", "bnhiu khach", "bn khach", "so khach", "may khach", "co may khach")):
+        if any(k in q_nk for k in ("bao nhieu khach", "bnhiu khach", "bn khach", "so khach", "may khach", "co may khach", "dem khach", "cac khach")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "debt_customer_count", "number", tw, ent)
         if any(k in q_nk for k in ("khach nao", "ai dang no", "top")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "debt_top_customers_list", "list" if top_k > 1 else "string", tw, ent, top_k=top_k)
@@ -274,7 +291,7 @@ def parse_question(
     if any(k in q_nk for k in ("gan het han nhat", "can date nhat", "can date nhut", "hsd som nhat", "han dung som nhat")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "nearest_expiry_date", "date", tw, ent)
 
-    if any(k in q_nk for k in ("het han trong", "co han dung tu", "se het han tu")):
+    if any(k in q_nk for k in ("het han trong", "co han dung tu", "se het han tu", "hsd tu", "co hsd tu", "hsd trong", "han dung tu")) or (tw.label == "explicit_range" and "hsd" in q_nk):
         if any(k in q_nk for k in ("tien von", "dong bao nhieu tien", "dong bnhiu tien", "bao nhieu tien von")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "expiring_stock_cost", "number", tw, ent)
         if any(k in q_nk for k in ("may lo", "bao nhieu lo", "bnhiu lo", "so lo")):
@@ -587,7 +604,7 @@ def parse_question(
 
     # Multi-period comparison, monotonic check, or list ("tháng nào doanh thu cao nhất" vs "lần lượt mỗi tháng bao nhiêu")
     if tw.multi_windows or (("cao hon" in q_nk or "tang" in q_nk) and any(k in q_nk for k in ("phai ko", "phai khong", "dung khong", "dung vay khong"))):
-        if any(k in q_nk for k in ("tang lien tuc", "luon cao hon", "luon lon hon", "thang sau cao hon", "thang sau lon hon", "quy sau cao hon", "xu huong doanh thu", "co phai thang", "phai ko", "phai khong", "dung khong", "dung vay khong")):
+        if any(k in q_nk for k in ("tang lien tuc", "luon cao hon", "luon lon hon", "thang sau cao hon", "thang sau lon hon", "quy sau cao hon", "xu huong doanh thu", "co phai thang", "phai ko", "phai khong", "dung khong", "dung vay khong", "deu cao hon", "thang sau deu cao hon", "khong ha", "ko ha", "phai ko ta", "ko ta")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "is_revenue_monotonic_increasing", "boolean", tw, ent)
         if "thang nao" in q_nk or "quy nao" in q_nk:
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "multi_period_best", "date" if "thang" in q_nk else "string", tw, ent)
@@ -663,6 +680,11 @@ def _parse_auto_repair_question(
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_mechanic_by_commission", "string", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_mechanic_commission", "number", tw, ent)
 
+    if any(k in q_nk for k in ("trung binh", "binh quan")) and any(
+        k in q_nk for k in ("tien", "gia", "dthu", "doanh thu", "het bnhiu", "het bao nhieu")
+    ):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_avg_paid_ticket", "number", tw, ent)
+
     if "bao hanh" in q_nk:
         if any(k in q_nk for k in ("%", "phan tram", "ti le", "ty le")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_warranty_rate_pct", "percent", tw, ent)
@@ -682,9 +704,6 @@ def _parse_auto_repair_question(
         return ParsedQuestion(
             qid, biz_id, q_text, as_of_dt, "repair_top_vehicle_model", "list" if top_k > 1 else "string", tw, ent, top_k=top_k
         )
-
-    if any(k in q_nk for k in ("trung binh mot phieu", "trung binh 1 phieu", "binh quan mot phieu", "binh quan 1 phieu", "binh quan moi phieu")):
-        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_avg_paid_ticket", "number", tw, ent)
 
     if any(k in q_nk for k in ("bao nhieu chiec", "bnhiu chiec", "may chiec", "so chiec", "bao nhieu xe", "bnhiu xe", "may xe", "so xe")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_distinct_vehicles", "number", tw, ent)

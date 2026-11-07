@@ -83,6 +83,9 @@ def verify_and_gate(
         s_val = sanitize_scalar(val)
         if s_val is None or isinstance(s_val, bool) or not isinstance(s_val, (int, float)):
             return ExecutionResult(answer_type="abstain", value=None, reason="Invalid numeric value", confidence=0.0)
+        if t == "percent":
+            if abs(s_val) > 1000.0:
+                return ExecutionResult(answer_type="abstain", value=None, reason=f"Implausible percentage: {s_val}%", confidence=0.0)
         return ExecutionResult(answer_type=t, value=s_val, reason=res.reason, confidence=res.confidence)
 
     if t == "boolean":
