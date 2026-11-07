@@ -508,3 +508,36 @@ $$\mathbf{PA_{Run5} = \frac{137 - 40}{200} = \frac{97}{200} = +0.4850 \ (+48.50\
 
 > **Ghi chú về phân tích số liệu:** Khi chạy hàm `compute_pa` với toàn bộ file `answers.jsonl` (3.000 câu) làm tham chiếu chuẩn, 2.800 câu không nằm trong tập chạy 200 câu được tính là `missing` (tương đương `abstain`), hiển thị `Correct: 137, Wrong: 40, Abstained: 2823 (2800 missing + 23 abstain), Total: 3000`. Khi lọc chuẩn tập câu hỏi đã dự đoán (`preds`), điểm số chính thức trên tập benchmark 200 câu đạt chính xác **+0.4850 (+48.50%)**.
 
+---
+
+### Giai đoạn 6: Nâng cấp Kiến trúc Dữ liệu Nền tảng (Zero-Overfit Data-Centric Upgrades) — 2026-11-07
+
+Sau khi phân tích đối chiếu chuyên sâu tập Train (30 shop) và Public Test (14 shop) theo đúng quy định `rulebook.md` (§1, §8, §9), pipeline đã được nâng cấp đồng bộ ở 3 trụ cột kiến trúc cốt lõi, giải quyết triệt để các cụm lỗi hệ thống thay vì sửa chữa cục bộ:
+
+#### 1. Các giải pháp kiến trúc đã triển khai
+
+1. **Chuẩn hóa làm sạch dữ liệu tổng quát (`src/modules/data_loader.py`):**
+   - **Gộp khoảng trắng thừa & đồng bộ chữ hoa/thường (Rulebook §8 & §9):** Tự động thu gọn mọi chuỗi khoảng trắng liên tiếp (`\s+` -> `' '`) và đồng bộ các biến thể hoa/thường về dạng chính của hộ kinh doanh (giải quyết triệt để lỗi phân tách dòng ở 18/30 shop Train và 8/14 shop Public Test).
+   - **Nhận diện Header gộp 2 tầng tiếng Việt:** Khắc phục lỗi chuẩn hóa chuỗi `"Đơn"`/`"Hàng"`/`"Tiền"` thành dạng compact để tự động đẩy hàng tiêu đề con lên làm header cột chuẩn cho các file Excel kế toán.
+   - **Tự động bổ sung năm cho ngày thiếu năm (Rulebook §8 dòng 113):** Khi cột ngày chỉ ghi dạng `D/M` hoặc `DD/MM` (`1/1`, `15/01`), tự động lấy năm từ tên sheet tháng hoặc năm chủ đạo của cột ghép vào ngày (`1/1` -> `2025-01-01`).
+   - **Khắc phục triệt để lỗi OutOfBoundsDatetime / AssertionError:** Chặn lỗi tràn nanosecond khi đọc ngày cổ (năm 1 AD), giúp nạp thành công 100% các sheet Excel của `biz_117` và `dev_004`.
+
+2. **Thuật toán liên kết quan hệ 4 bước (General Relational Bridging):**
+   - **Pass 1 (FK Aliasing):** Tự động phát hiện các cặp cột mã chứng từ/mã đơn có độ giao nhau >50% giữa 2 bảng và tạo alias 2 chiều (như `'Mã chứng từ'` và `'Ma don'`), loại bỏ hoàn toàn `KeyError` khi merge.
+   - **Pass 2 (Temporal Propagation):** Tự động kế thừa cột Ngày/Thời gian từ bảng Header (Hóa đơn/Phiếu nhập) xuống bảng Detail tương ứng khi bảng Detail thiếu cột thời gian.
+   - **Pass 3 (Product Dimension Propagation):** Tự động ánh xạ cột Tên sản phẩm/Tên hàng từ bảng danh mục sang các bảng phụ/chi tiết có cùng mã hàng/SKU.
+   - **Pass 4 (Customer Dimension Propagation):** Tự động ánh xạ cột Tên khách hàng từ bảng khách hàng sang bảng đơn hàng.
+
+3. **Cơ chế phòng hộ Sandbox & Confidence Gate:**
+   - **Giải quyết triệt để xung đột hậu tố merge (`_x` / `_y`):** Tự động bọc `pd.merge` và `pd.DataFrame.merge` để bảo toàn tên cột gốc phía bảng chính (Left Table), ngăn chặn `KeyError: 'Trạng thái'` hoặc `KeyError: 'Tên hàng'` sau khi nối bảng.
+   - **Mở rộng module sandbox:** Bổ sung `_strptime` và `dateutil` vào `_ALLOWED_IMPORTS` để hỗ trợ các hàm datetime nội bộ của Python 3.11/3.14.
+   - **Kẹp ngày 29/02 ở năm không nhuận:** Tự động điều chỉnh các ngày `YYYY-02-29` ở năm không nhuận thành `YYYY-02-28`.
+   - **Chống lỗi Fan-out mở rộng:** Tự động chuyển phép tính `['Tổng tiền hàng'].sum()` sang `['Thành tiền'].sum()` trên mọi biến DataFrame sau khi merge bảng.
+   - **Mở gói kết quả `list` từ `dict.items()`:** Tự động trích xuất danh sách giá trị số khi LLM trả về danh sách các cặp `(tháng, giá_trị)`.
+   - **Miễn trừ phạt bảng Snapshot:** Không phạt thiếu lọc ngày đối với các bảng tồn kho tĩnh (`BaoCaoTonKho`, `TonKho`) trong `confidence_gate.py`.
+
+#### 2. Kết quả kiểm thử tự động
+- `pytest tests/`: **173/173 passed** (100% test suites passed).
+- Bổ sung 8 unit tests mới trong `tests/test_phase6_architecture.py` kiểm chứng toàn bộ 3 trụ cột trên.
+
+
