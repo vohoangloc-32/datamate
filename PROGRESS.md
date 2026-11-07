@@ -491,3 +491,20 @@ Sau khi phân tích pháp y toàn diện 52 câu Sai và 45 câu Abstain ở Run
 #### 2. Kết quả kiểm thử tự động
 - `pytest tests/`: **165/165 passed** (100% test suites passed).
 - Đã bổ sung 8 unit tests mới bao phủ toàn bộ các trường hợp nghiệp vụ trên.
+
+#### 3. Bứt phá kỷ lục Benchmark Run 5 trên Colab Pro (1x A100 SXM, 200 câu stratified)
+
+Sau khi deploy commit `66f15b9`, kết quả benchmark thực thi trực tiếp trên Google Colab Pro đạt mức tăng trưởng lịch sử:
+
+| Chỉ số | Baseline cũ | Run 4a (8k context) | Run 4b (16k context) | **Run 5 (Bản vá toàn diện)** | So với Run 4b |
+|---|---:|---:|---:|---:|:---|
+| **Số câu ĐÚNG (+1 pt)** | 34 (17.0%) | 89 (44.5%) | 103 (51.5%) | **137 (68.5%)** 🏆 | 🔥 **+34 câu đúng (+33.0%)** |
+| **Số câu SAI (-1 pt)** | 134 (67.0%) | 33 (16.5%) | 52 (26.0%) | **40 (20.0%)** 🟢 | 🟢 **Giảm 12 câu sai (-23.1%)** |
+| **Số câu ABSTAIN (0 pt)** | 32 (16.0%) | 78 (39.0%) | 45 (22.5%) | **23 (11.5%)** | 🟢 **Giảm từ 45 xuống 23 câu** |
+| 🔥 **PENALIZED ACCURACY** | **-0.5000 (-50%)** | **+0.2800 (+28%)** | **+0.2550 (+25.5%)** | **+0.4850 (+48.50%)** 🚀 | 🔥 **GẦN GẤP ĐÔI (+23% PA tuyệt đối)** |
+| **Tỷ lệ chính xác thô (Accuracy)** | 17.0% | 44.5% | 51.5% | **68.5%** | **Gần 70% câu hỏi giải quyết chuẩn xác** |
+
+$$\mathbf{PA_{Run5} = \frac{137 - 40}{200} = \frac{97}{200} = +0.4850 \ (+48.50\%)}$$
+
+> **Ghi chú về phân tích số liệu:** Khi chạy hàm `compute_pa` với toàn bộ file `answers.jsonl` (3.000 câu) làm tham chiếu chuẩn, 2.800 câu không nằm trong tập chạy 200 câu được tính là `missing` (tương đương `abstain`), hiển thị `Correct: 137, Wrong: 40, Abstained: 2823 (2800 missing + 23 abstain), Total: 3000`. Khi lọc chuẩn tập câu hỏi đã dự đoán (`preds`), điểm số chính thức trên tập benchmark 200 câu đạt chính xác **+0.4850 (+48.50%)**.
+
