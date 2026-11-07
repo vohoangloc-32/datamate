@@ -348,7 +348,7 @@ def resolve_question_time_window(
 
     # "3 tháng liền nhau kết thúc ở tháng M/YYYY"
     m_mm2 = re.search(
-        r"(\d+)\s*thang\s*(?:lien\s*nhau|lien\s*tiep)\s*ket\s*thuc\s*(?:o|vao|tai)?\s*(?:thang|th)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d)",
+        r"(\d+)\s*thang\s*(?:lien\s*nhau|lien\s*tiep|lien)?\s*(?:ket\s*thuc|tinh\s*toi|tinh\s*den|den|toi)?\s*(?:o|vao|tai)?\s*(?:thang|th|t)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d)",
         q_noacc,
     )
     if m_mm2:
@@ -368,7 +368,7 @@ def resolve_question_time_window(
 
     # "từ tháng M1/Y1 qua tháng M2/Y2 rồi tháng M3/Y3" or "từ tháng M1/Y1 đến tháng M3/Y3"
     m_mm3 = re.search(
-        r"tu\s*(?:thang|th)\s*(\d{1,2})(?:[/\-](202\d))?\s*(?:den|toi|qua)\s*(?:het\s*)?(?:thang|th)?\s*(\d{1,2})(?:[/\-](202\d))?(?:\s*roi\s*(?:thang|th)?\s*(\d{1,2}))?\s*(?:[/\-]|nam\s*)(202\d)",
+        r"tu\s*(?:thang|th|t)?\s*(\d{1,2})(?:[/\-](202\d))?\s*(?:den|toi|qua)\s*(?:het\s*)?(?:thang|th|t)?\s*(\d{1,2})(?:[/\-](202\d))?(?:\s*roi\s*(?:thang|th|t)?\s*(\d{1,2}))?\s*(?:[/\-]|nam\s*)(202\d)",
         q_noacc,
     )
     if m_mm3:
@@ -521,7 +521,7 @@ def resolve_question_time_window(
                 py, pm = prev_month_ym(y_val, m_val)
                 ps, pe = month_bounds(py, pm)
                 w.compare_window = TimeWindow(ps, pe, label=f"{py:04d}-{pm:02d}")
-            elif "cung ky nam truoc" in q_noacc or "nam ngoai" in q_noacc or "nam truoc" in q_noacc:
+            elif any(k in q_noacc for k in ("cung ky nam truoc", "nam ngoai", "nam truoc", "nam roi", "cung thang nam roi", "cung ky nam roi", "thang nam ngoai")):
                 ps, pe = month_bounds(y_val - 1, m_val)
                 w.compare_window = TimeWindow(ps, pe, label=f"{y_val-1:04d}-{m_val:02d}")
             elif has_both_shifts:
@@ -613,7 +613,7 @@ def resolve_question_time_window(
         ys = dt.date(as_of_date.year, 1, 1)
         return TimeWindow(ys, as_of_date, label="this_year", shift_filter=shift_filter, specific_weekday=specific_wday)
 
-    if "nam ngoai" in q_noacc or "nam truoc" in q_noacc:
+    if any(k in q_noacc for k in ("nam ngoai", "nam truoc", "nam roi")):
         py = as_of_date.year - 1
         return TimeWindow(dt.date(py, 1, 1), dt.date(py, 12, 31), label="last_year", shift_filter=shift_filter, specific_weekday=specific_wday)
 

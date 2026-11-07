@@ -89,6 +89,13 @@ QUESTION_TOKEN_MAP: Dict[str, str] = {
     "lenn": "lên", "lne": "lên", "rui": "rồi", "tug": "từng",
     "mun": "muốn", "mún": "muốn", "bit": "biết", "bít": "biết",
     "zia": "về", "zo": "vào", "vs": "với",
+    "đh": "đơn hàng", "dh": "đơn hàng", "đơng": "đơn", "tiềng": "tiền",
+    "kòn": "còn", "tíh": "tính", "wán": "quán", "mik": "mình", "mô": "nào",
+    "sp": "sản phẩm", "hd": "hóa đơn", "hđ": "hóa đơn", "kh": "khách hàng",
+    "ncc": "nhà cung cấp", "nhìu nhứt": "nhiều nhất", "caonhất": "cao nhất",
+    "ít nhứt": "ít nhất", "ngừi": "người", "nượt": "lượt", "xửa": "sửa",
+    "báng": "bán", "tỉ nệ": "tỉ lệ", "dảm": "giảm", "xo": "so",
+    "kac": "các", "mần": "làm", "mí": "mấy", "nhiềuđơn": "nhiều đơn", "nhieudon": "nhiều đơn",
 }
 
 _QUESTION_TOKEN_RE = re.compile(
@@ -365,7 +372,13 @@ def _drop_footer_and_header_rows(df: pd.DataFrame) -> pd.DataFrame:
 def build_canonical_business(pkg: BusinessPackage) -> CanonicalBusiness:
     t_names = list(pkg.tables.keys())
     all_cols = [c for df in pkg.tables.values() for c in df.columns if not c.startswith("_")]
-    domain = detect_business_domain(t_names, all_cols, pkg.readme_text)
+    sample_texts = []
+    for tdf in pkg.tables.values():
+        for col in tdf.columns:
+            if any(k in col.lower() for k in ("tên", "ten", "nhóm", "nhom", "loại", "loai", "hàng", "hang", "sản phẩm", "san pham")):
+                sample_texts.extend(tdf[col].dropna().astype(str).head(30).tolist())
+    sample_txt = " ".join(sample_texts)
+    domain = detect_business_domain(t_names, all_cols, pkg.readme_text, sample_txt)
 
     r_end = getattr(pkg, "readme_end_date", None) or getattr(pkg, "data_end_date", None)
     cb = CanonicalBusiness(
@@ -462,7 +475,7 @@ def _build_products_and_units(
         df_cat = tables[cat_tname]
         c_code = _first_present(
             df_cat,
-            ["Mã hàng hóa", "Mã hàng", "Mã SKU", "MaHangHoa", "ma_sp", "Mã H.hóa", "Mã sản phẩm bán", "SKU", "Mã HH"],
+            ["Mã hàng hóa", "Mã hàng", "Mã SKU", "MaHangHoa", "ma_sp", "Mã H.hóa", "Mã sản phẩm bán", "SKU", "Mã HH", "Mã vạch"],
         )
         c_name = _first_present(
             df_cat,
@@ -505,6 +518,30 @@ def _build_products_and_units(
             phone_model, phone_brand = extract_phone_model_and_brand(name, is_phone)
             if phone_brand and not brand_val:
                 brand_val = phone_brand
+
+            if cb.domain == "mother_baby":
+                if not brand_val:
+                    for mb_b in (
+                        "similac", "enfamil", "friso", "nan", "dielac", "bobby", "huggies",
+                        "merries", "moony", "pampers", "pigeon", "ridielac", "johnson's baby",
+                        "lactacyd", "bepanthen", "d-nee", "dnee", "nutifood", "meiji",
+                        "abbott", "philips avent", "monte", "hipp", "wesser", "chuchu",
+                        "dr browns", "blackmores", "aptamil", "morinaga", "glico", "pediasure",
+                    ):
+                        if re.search(rf"\b{re.escape(mb_b)}\b", name.lower()):
+                            brand_val = mb_b.title()
+                            break
+                if not size_val:
+                    m_sz = re.search(r"\b(?:size\s+|cỡ\s+)(nb|s|m|l|xl|xxl|xxxl)\b", name, re.IGNORECASE)
+                    if m_sz:
+                        size_val = f"size {m_sz.group(1).upper()}"
+                    elif re.search(r"\bnewborn\s*(\d*)\b", name, re.IGNORECASE):
+                        m_nb = re.search(r"\bnewborn\s*(\d*)\b", name, re.IGNORECASE)
+                        size_val = f"size NB{m_nb.group(1)}".strip()
+                    else:
+                        m_so = re.search(r"\b(?:số|so)\s*(\d+)\b", name, re.IGNORECASE)
+                        if m_so:
+                            size_val = f"số {m_so.group(1)}"
 
             aliases = [name]
             if code:
@@ -707,13 +744,17 @@ def _build_auto_repair(cb: CanonicalBusiness, tables: Dict[str, pd.DataFrame]) -
                 continue
             comm = float(parse_vn_number(r.get("Hoa hồng (%)")) or 0.0)
             join_dt = parse_flexible_date(r.get("Ngày vào làm"))
+            given = full_name.split()[-1]
             m_rows.append({
                 "mechanic_name": full_name,
                 "mechanic_norm": norm_key(full_name),
+                "full_name": full_name,
+                "full_name_norm": norm_key(full_name),
+                "alias": given,
+                "alias_norm": norm_key(given),
                 "commission_pct": comm,
                 "join_date": join_dt,
             })
-            given = full_name.split()[-1]
             for alias in (full_name, given, f"a {given}", f"a.{given}", f"anh {given}"):
                 mech_map[norm_key(alias)] = (full_name, comm)
         cb.mechanics = pd.DataFrame(m_rows)
@@ -1228,12 +1269,25 @@ def _build_orders_and_lines(cb: CanonicalBusiness, tables: Dict[str, pd.DataFram
     # Pre-build product cost/category lookup from cb.products
     prod_cat_map: Dict[str, str] = {}
     prod_cost_map: Dict[str, float] = {}
+    prod_brand_map: Dict[str, str] = {}
+    prod_brand_norm_map: Dict[str, str] = {}
+    prod_size_norm_map: Dict[str, str] = {}
+    prod_phone_model_norm_map: Dict[str, str] = {}
     if not cb.products.empty:
-        for pk, pcat, pcost in zip(cb.products["product_key"], cb.products["category"], cb.products["cost_price"]):
-            if pcat:
-                prod_cat_map[pk] = pcat
-            if pcost is not None and pd.notna(pcost):
-                prod_cost_map[pk] = float(pcost)
+        for _, pr in cb.products.iterrows():
+            pk = pr["product_key"]
+            if pr.get("category"):
+                prod_cat_map[pk] = pr["category"]
+            if pd.notna(pr.get("cost_price")) and pr.get("cost_price") is not None:
+                prod_cost_map[pk] = float(pr["cost_price"])
+            if pr.get("brand"):
+                prod_brand_map[pk] = str(pr["brand"])
+            if pr.get("brand_norm"):
+                prod_brand_norm_map[pk] = str(pr["brand_norm"])
+            if pr.get("size_norm"):
+                prod_size_norm_map[pk] = str(pr["size_norm"])
+            if pr.get("phone_model_norm"):
+                prod_phone_model_norm_map[pk] = str(pr["phone_model_norm"])
 
     n_rows = len(df_d)
     s_oid = df_d[c_oid].tolist() if has_order_id else [f"ROW_{i:06d}" for i in range(n_rows)]
@@ -1496,6 +1550,10 @@ def _build_orders_and_lines(cb: CanonicalBusiness, tables: Dict[str, pd.DataFram
             "product_name": p_disp,
             "category": pcat,
             "category_norm": norm_key(pcat),
+            "brand": prod_brand_map.get(pk, ""),
+            "brand_norm": prod_brand_norm_map.get(pk, ""),
+            "size_norm": prod_size_norm_map.get(pk, ""),
+            "phone_model_norm": prod_phone_model_norm_map.get(pk, ""),
             "unit": unit_str,
             "unit_norm": unit_norm,
             "qty": qty,

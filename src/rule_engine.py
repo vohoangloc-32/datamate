@@ -91,11 +91,16 @@ def normalize_order_status(raw_status: Any, raw_note: Any = None) -> str:
     return "completed"
 
 
-def detect_business_domain(table_names: List[str], all_columns: List[str], readme_text: str = "") -> str:
+def detect_business_domain(
+    table_names: List[str],
+    all_columns: List[str],
+    readme_text: str = "",
+    sample_text: str = "",
+) -> str:
     """Return primary domain identifier for a business package."""
     t_set = {t.lower() for t in table_names}
     c_set = {c.lower() for c in all_columns}
-    txt = (readme_text + " " + " ".join(table_names) + " " + " ".join(all_columns)).lower()
+    txt = (readme_text + " " + " ".join(table_names) + " " + " ".join(all_columns) + " " + sample_text).lower()
     if "sosuaxe" in t_set or "danhsachtho" in t_set:
         return "auto_repair"
     if "imei" in c_set or "thumaycu" in t_set or "trả góp" in t_set or "ghi tắt" in t_set:
@@ -106,10 +111,17 @@ def detect_business_domain(table_names: List[str], all_columns: List[str], readm
         return "pharmacy"
     if any(t in t_set for t in ("sogiaohang", "sohanno", "bảng kê phiếu giao hàng", "chi tiết công nợ theo hạn")):
         return "construction"
-    if any(k in txt for k in ("cà phê", "trà đào", "bạc xỉu", "topping", "trà sữa", "soda", "croissant", "tiramisu")):
+    if any(k in txt for k in ("cà phê", "trà đào", "bạc xỉu", "topping", "trà sữa", "soda", "croissant", "tiramisu", "matcha", "latte")):
         return "cafe"
     if any(k in c_set for k in ("bàn", "phòng/bàn", "khu vực")):
         return "restaurant"
+    # Secondary check on sample product/category data
+    if any(k in txt for k in ("bỉm", "tã", "sữa bột", "similac", "enfamil", "bobby", "huggies", "merries", "moony", "pampers")):
+        return "mother_baby"
+    if any(k in txt for k in ("thuốc", "kháng sinh", "paracetamol", "panadol", "viên nén", "viên nang")):
+        return "pharmacy"
+    if any(k in txt for k in ("xi măng", "sắt thép", "cát đá", "gạch", "tôn")):
+        return "construction"
     return "grocery"
 
 

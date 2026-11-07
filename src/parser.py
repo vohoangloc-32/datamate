@@ -569,6 +569,7 @@ def parse_question(
         for k in (
             "doanh thu", "dthu", "doanh so", "bao nhieu tien", "bnhiu tien", "bn tien",
             "nhieu tien", "nhiu tien", "thu ve bao nhieu", "ban duoc bao nhieu tien", "tien ban",
+            "may dong", "tien hang", "tien sua", "tien bán", "tien ban ra", "ban ra bnhiu",
         )
     )
     is_order_count_question = any(
@@ -576,15 +577,17 @@ def parse_question(
         for k in (
             "bao nhieu don", "bnhiu don", "bn don", "may don", "so don", "so dh", "tat ca bao nhieu don",
             "ban dc may don", "duoc bnhiu don", "so bill", "bao nhieu bill", "may bill", "so hoa don", "bao nhieu hoa don",
+            "may don hang", "bao nhieu don hang", "bnhiu don hang", "bn don hang", "dem don", "co may don",
+            "duoc may don", "co bao nhieu don", "co bnhiu don", "may phieu", "bao nhieu phieu", "bnhiu phieu",
         )
-    )
+    ) or any(k in q_nk for k in ("may dh", "bao nhieu dh", "bnhiu dh", "mi dh"))
 
     if is_order_count_question and not is_money_question:
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "order_count", "number", tw, ent)
 
     # Multi-period comparison, monotonic check, or list ("tháng nào doanh thu cao nhất" vs "lần lượt mỗi tháng bao nhiêu")
-    if tw.multi_windows:
-        if any(k in q_nk for k in ("tang lien tuc", "luon cao hon", "luon lon hon", "thang sau cao hon", "thang sau lon hon", "quy sau cao hon", "xu huong doanh thu", "co phai thang")):
+    if tw.multi_windows or (("cao hon" in q_nk or "tang" in q_nk) and any(k in q_nk for k in ("phai ko", "phai khong", "dung khong", "dung vay khong"))):
+        if any(k in q_nk for k in ("tang lien tuc", "luon cao hon", "luon lon hon", "thang sau cao hon", "thang sau lon hon", "quy sau cao hon", "xu huong doanh thu", "co phai thang", "phai ko", "phai khong", "dung khong", "dung vay khong")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "is_revenue_monotonic_increasing", "boolean", tw, ent)
         if "thang nao" in q_nk or "quy nao" in q_nk:
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "multi_period_best", "date" if "thang" in q_nk else "string", tw, ent)
@@ -592,9 +595,11 @@ def parse_question(
 
     # Two-filter revenue pair list ("doanh thu bán qua X và bán qua Y mỗi bên / lần lượt là bao nhiêu")
     if is_money_question and (
-        any(k in q_nk for k in ("lan luot", "moi ca", "moi ben", "tung ca", "moi kenh", "moi hinh thuc"))
+        any(k in q_nk for k in ("lan luot", "moi ca", "moi ben", "tung ca", "moi kenh", "moi hinh thuc", "tung ben"))
         or q_nk.count("doanh thu cac don") >= 2
         or (" va " in q_nk and any(k in q_nk for k in ("moi loai", "tung loai")))
+        or ("bao nhieu" in q_nk and (q_nk.count("bao nhieu") >= 2 or q_nk.count("bnhiu") >= 2 or "con don" in q_nk or "va don" in q_nk))
+        or ("bnhiu" in q_nk and q_nk.count("bnhiu") >= 2)
     ):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "revenue_pair_list", "list", tw, ent)
 
@@ -607,6 +612,20 @@ def parse_question(
         or any(k in q_nk for k in ("bao nhieu chiec", "bnhiu chiec", "may chiec", "bao nhieu may", "bnhiu may", "may may", "so ly", "bao nhieu ly", "may ly"))
     ):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "product_qty_sold", "number", tw, ent)
+
+    # Safety Check: if question asks for date, table, list, percent, string, or boolean, DO NOT fallback to revenue_total (number)!
+    if any(k in q_nk for k in ("ngay nao", "hom nao", "bua nao", "thang nao", "khi nao", "luc nao")):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "busiest_day_by_revenue", "date", tw, ent)
+    if any(k in q_nk for k in ("%", "phan tram", "ti le", "ty le", "tang hay giam", "thay doi", "tang truong")):
+        if tw.compare_window is not None:
+            return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "revenue_change_pct", "percent", tw, ent)
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "share_pct", "percent", tw, ent)
+    if any(k in q_nk for k in ("cho bang", "lap bang", "bang hoa hong", "bang doanh thu", "bang xep")) or ("bảng " in q_text.lower() and "bằng" not in q_text.lower()):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unhandled_table", "abstain", tw, ent, confidence=0.0)
+    if any(k in q_nk for k in ("ke giup", "liet ke", "nhung mat hang nao", "nhung mon nao", "nhung ai", "cac thang", "tung thang")):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unhandled_list", "abstain", tw, ent, confidence=0.0)
+    if any(k in q_nk for k in ("ai ", "ai la", "nguoi nao", "khach nao", "tho nao", "nhan vien nao", "la ai", "la gi", "ten gi", "dong xe nao")):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unhandled_string", "abstain", tw, ent, confidence=0.0)
 
     return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "revenue_total", "number", tw, ent)
 
@@ -624,7 +643,24 @@ def _parse_auto_repair_question(
     if "cham chi nhat" in q_nk:
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "hardworking_staff", "string", tw, ent)
 
-    if "hoa hong" in q_nk:
+    if any(k in q_nk for k in ("ngay nao", "bua nao", "hom nao", "ngay co")) and any(
+        k in q_nk for k in (
+            "nhieu tien nhat", "doanh thu cao nhat", "dthu cao nhat", "ban duoc nhieu tien nhat",
+            "thu ve nhieu nhat", "ban ra nhieu tien nhat", "tien sua nhieu nhat", "tien ban nhieu nhat", "nhieu tien nhut",
+        )
+    ):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "busiest_day_by_revenue", "date", tw, ent)
+
+    if any(k in q_nk for k in ("ngay nao", "bua nao", "hom nao")) and any(
+        k in q_nk for k in ("dat khach nhat", "dong khach nhat", "nhieu phieu nhat", "nhieu luot xe nhat")
+    ):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "busiest_day_by_orders", "date", tw, ent)
+
+    if "hoa hong" in q_nk or "hue hong" in q_nk:
+        if any(k in q_nk for k in ("bang", "cho bang", "danh sach", "tung tho", "xep tu cao xuong thap", "xep tien giam dan", "xep len tren")):
+            return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_mechanic_commission_table", "table", tw, ent)
+        if any(k in q_nk for k in ("tho nao", "tho mo", "ai la tho", "ai nhieu", "cao nhat", "nhieu nhat")):
+            return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_mechanic_by_commission", "string", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_mechanic_commission", "number", tw, ent)
 
     if "bao hanh" in q_nk:
@@ -632,31 +668,31 @@ def _parse_auto_repair_question(
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_warranty_rate_pct", "percent", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_warranty_count", "number", tw, ent)
 
-    if "khach quen" in q_nk or "toi nhieu lan" in q_nk or "sua nhieu lan" in q_nk:
+    if "khach quen" in q_nk or "toi nhieu lan" in q_nk or "sua nhieu lan" in q_nk or "2 lan tro len" in q_nk or "tu 2 lan" in q_nk:
         if "xe nao" in q_nk or "bien so nao" in q_nk:
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_repeat_vehicle", "string", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_repeat_vehicle_count", "number", tw, ent)
 
-    if "tho nao" in q_nk or "ai la tho" in q_nk or "nhan nhieu phieu" in q_nk:
-        if any(k in q_nk for k in ("doanh thu", "dthu", "nhieu tien")):
+    if "tho nao" in q_nk or "tho mo" in q_nk or "ai la tho" in q_nk or "nhan nhieu phieu" in q_nk or "nhieu luot xe" in q_nk or "nhieu xe nhat" in q_nk:
+        if any(k in q_nk for k in ("doanh thu", "dthu", "nhieu tien", "tien sua")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_mechanic_by_revenue", "string", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_top_mechanic_by_tickets", "string", tw, ent)
 
-    if "dong xe nao" in q_nk or "loai xe nao" in q_nk:
+    if "dong xe nao" in q_nk or "loai xe nao" in q_nk or "dong xe mo" in q_nk:
         return ParsedQuestion(
             qid, biz_id, q_text, as_of_dt, "repair_top_vehicle_model", "list" if top_k > 1 else "string", tw, ent, top_k=top_k
         )
 
-    if any(k in q_nk for k in ("trung binh mot phieu", "trung binh 1 phieu", "binh quan mot phieu")):
+    if any(k in q_nk for k in ("trung binh mot phieu", "trung binh 1 phieu", "binh quan mot phieu", "binh quan 1 phieu", "binh quan moi phieu")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_avg_paid_ticket", "number", tw, ent)
 
-    if any(k in q_nk for k in ("bao nhieu chiec xe", "bnhiu chiec xe", "may chiec xe", "so chiec xe")):
+    if any(k in q_nk for k in ("bao nhieu chiec", "bnhiu chiec", "may chiec", "so chiec", "bao nhieu xe", "bnhiu xe", "may xe", "so xe")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_distinct_vehicles", "number", tw, ent)
 
-    if tw.compare_window is not None and any(k in q_nk for k in ("%", "phan tram", "tang hay giam", "thay doi")):
+    if tw.compare_window is not None and any(k in q_nk for k in ("%", "phan tram", "tang hay giam", "thay doi", "tang giam")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_revenue_change_pct", "percent", tw, ent)
 
-    if any(k in q_nk for k in ("doanh thu", "dthu", "tien sua", "thu duoc bao nhieu tien", "ban duoc bao nhieu tien")):
+    if any(k in q_nk for k in ("doanh thu", "dthu", "tien sua", "thu duoc bao nhieu tien", "ban duoc bao nhieu tien", "tong bao nhieu tien", "tien hang", "lam duoc tong")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_revenue_total", "number", tw, ent)
 
     return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "repair_ticket_count", "number", tw, ent)

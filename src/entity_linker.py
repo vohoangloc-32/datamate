@@ -193,11 +193,12 @@ class EntityLinker:
         # 2. Link Staff / Mechanic
         if not self.cb.mechanics.empty:
             for _, mr in self.cb.mechanics.iterrows():
-                al = mr["alias_norm"]
-                fn = mr["full_name_norm"]
-                if (fn and f" {fn} " in q_padded) or (al and re.search(rf"\b(?:tho|anh|chu)\s+{re.escape(al)}\b", q_nk)):
+                al = mr.get("alias_norm") or (mr.get("mechanic_norm", "").split()[-1] if mr.get("mechanic_norm") else "")
+                fn = mr.get("full_name_norm") or mr.get("mechanic_norm") or ""
+                fn_disp = mr.get("full_name") or mr.get("mechanic_name") or ""
+                if (fn and f" {fn} " in q_padded) or (al and (re.search(rf"\b(?:tho|anh|chu)\s+{re.escape(al)}\b", q_nk) or f" {al} " in q_padded)):
                     res.mechanic_norm = fn
-                    res.mechanic_name = mr["full_name"]
+                    res.mechanic_name = fn_disp
                     break
         if not self.cb.orders.empty and "staff_id" in self.cb.orders.columns:
             for st_id in self.cb.orders["staff_id"].dropna().unique():
@@ -448,9 +449,9 @@ class EntityLinker:
                 return
 
         if self.cb.domain == "mother_baby":
-            if any(k in q_nk for k in ("bim ta", "ta bim", "bim", "ta dan", "ta quan")):
+            if any(k in q_nk for k in ("bim ta", "ta bim", "bim", "ta dan", "ta quan", "ta")):
                 for catn, catdisp in self.categories:
-                    if "bim" in catn or "ta" in catn:
+                    if re.search(r"\b(?:bim|ta)\b", catn):
                         res.category_norm = catn
                         res.category_display = catdisp
                         return

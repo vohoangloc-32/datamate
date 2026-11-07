@@ -163,6 +163,9 @@ def _filter_lines_in_window(
     elif ent.cafe_size_filter == "l" and not ent.product_key:
         mask &= lines["product_name"].str.lower().str.strip().str.endswith("(l)", na=False)
 
+    if ent.target_unit_norm and not ent.product_key:
+        mask &= lines["unit_norm"] == ent.target_unit_norm
+
     return lines[mask]
 
 
@@ -1629,7 +1632,7 @@ def _execute_auto_repair(
         grp = grp.sort_values(by=["ticket_id", "license_plate"], ascending=[False, True])
         return ExecutionResult("string", str(grp.iloc[0]["license_plate"]))
 
-    if intent in ("repair_top_mechanic_by_tickets", "repair_top_mechanic_by_revenue", "hardworking_staff"):
+    if intent in ("repair_top_mechanic_by_tickets", "repair_top_mechanic_by_revenue", "hardworking_staff", "repair_top_mechanic_by_commission"):
         base_t = df_t[(df_t["date"] >= tw.start_date) & (df_t["date"] <= end_d)]
         if base_t.empty:
             return _unanswerable("Không có phiếu sửa xe trong kỳ.")
@@ -1637,11 +1640,47 @@ def _execute_auto_repair(
             grp = base_t.groupby("mechanic_name", as_index=False)["ticket_id"].count().rename(columns={"ticket_id": "metric"})
         elif intent == "repair_top_mechanic_by_revenue":
             grp = base_t.groupby("mechanic_name", as_index=False)["amount"].sum().rename(columns={"amount": "metric"})
+        elif intent == "repair_top_mechanic_by_commission":
+            paid_sub = base_t[base_t["is_paid"] == True].copy()
+            if paid_sub.empty:
+                return _unanswerable("Không có phiếu thu tiền trong kỳ.")
+            paid_sub["comm"] = paid_sub["amount"] * paid_sub["commission_pct"] / 100.0
+            grp = paid_sub.groupby("mechanic_name", as_index=False)["comm"].sum().rename(columns={"comm": "metric"})
         else:  # hardworking_staff
             grp = base_t.groupby("mechanic_name", as_index=False)["date"].nunique().rename(columns={"date": "metric"})
         grp["tie_code"] = grp["mechanic_name"].apply(norm_key)
         grp = grp.sort_values(by=["metric", "tie_code"], ascending=[False, True])
         return ExecutionResult("string", str(grp.iloc[0]["mechanic_name"]))
+
+    if intent == "repair_mechanic_commission_table":
+        paid_sub = sub[sub["is_paid"] == True]
+        all_mechs = cb.mechanics["mechanic_name"].tolist() if not cb.mechanics.empty else sub["mechanic_name"].unique().tolist()
+        comm_data = []
+        for m_name in all_mechs:
+            m_norm = norm_key(m_name)
+            m_sub = paid_sub[paid_sub["mechanic_norm"] == m_norm]
+            comm_val = float((m_sub["amount"] * m_sub["commission_pct"] / 100.0).sum()) if not m_sub.empty else 0.0
+            comm_data.append({"tho": m_name, "comm": round_money_vnd(comm_val), "tie_code": m_norm})
+        df_comm = pd.DataFrame(comm_data)
+        df_comm = df_comm.sort_values(by=["comm", "tie_code"], ascending=[False, True])
+        rows = [[str(r["tho"]), int(r["comm"])] for _, r in df_comm.iterrows()]
+        return ExecutionResult("table", {"columns": ["tho", "tien_hoa_hong"], "rows": rows})
+
+    if intent == "busiest_day_by_revenue":
+        if sub.empty:
+            return _unanswerable("Không có phiếu sửa xe trong kỳ.")
+        grp = sub.groupby("date", as_index=False)["amount"].sum()
+        grp = grp.sort_values(by=["amount", "date"], ascending=[False, True])
+        best_dt = grp.iloc[0]["date"]
+        return ExecutionResult("date", best_dt.strftime("%Y-%m-%d"))
+
+    if intent == "busiest_day_by_orders":
+        if sub.empty:
+            return _unanswerable("Không có phiếu sửa xe trong kỳ.")
+        grp = sub.groupby("date", as_index=False)["ticket_id"].count()
+        grp = grp.sort_values(by=["ticket_id", "date"], ascending=[False, True])
+        best_dt = grp.iloc[0]["date"]
+        return ExecutionResult("date", best_dt.strftime("%Y-%m-%d"))
 
     if intent == "repair_top_vehicle_model":
         if sub.empty:
