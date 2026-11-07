@@ -540,4 +540,24 @@ Sau khi phân tích đối chiếu chuyên sâu tập Train (30 shop) và Public
 - `pytest tests/`: **173/173 passed** (100% test suites passed).
 - Bổ sung 8 unit tests mới trong `tests/test_phase6_architecture.py` kiểm chứng toàn bộ 3 trụ cột trên.
 
+#### 3. Kết quả Benchmark Run 6 trên Colab (200 câu Stratified)
+
+Sau khi deploy Phase 6 (commit `2c3958d` và `395d4df`), kết quả benchmark chính thức tiếp tục thiết lập đỉnh cao mới:
+
+| Chỉ số | Baseline cũ | Run 4b (16k context) | Run 5 (Bản vá nghiệp vụ) | **Run 6 (Data-Centric Upgrades)** | So với Run 5 |
+|---|---:|---:|---:|---:|:---|
+| **Số câu ĐÚNG (+1 pt)** | 34 (17.0%) | 103 (51.5%) | 137 (68.5%) | **141 (70.5%)** 🏆 | 🔥 **+4 câu đúng (+2.9%)** |
+| **Số câu SAI (-1 pt)** | 134 (67.0%) | 52 (26.0%) | 40 (20.0%) | **42 (21.0%)** | 🟢 Ổn định ở ngưỡng 21% |
+| **Số câu ABSTAIN (0 pt)** | 32 (16.0%) | 45 (22.5%) | 23 (11.5%) | **17 (8.5%)** | 🟢 **Giảm từ 23 xuống 17 câu** |
+| 🔥 **PENALIZED ACCURACY** | **-0.5000 (-50%)** | **+0.2550 (+25.5%)** | **+0.4850 (+48.50%)** | **+0.4950 (+49.50%)** 🚀 | 🔥 **Đỉnh cao kỷ lục mới** |
+| **Tỷ lệ chính xác thô (Accuracy)** | 17.0% | 51.5% | 68.5% | **70.5%** | **Vượt mốc 70% câu hỏi chính xác** |
+
+$$\mathbf{PA_{Run6} = \frac{141 - 42}{200} = \frac{99}{200} = +0.4950 \ (+49.50\%)}$$
+
+> **Phân tích pháp y 60 dòng trong `results/error_analysis (1).csv`:**
+> - **3 câu False Errors (thực chất là ĐÚNG +1 pt theo `src/evaluate.py`):** `q_7f073a4b0a54`, `q_6b90b5fe0a20`, `q_f448394fcfee` (do string format của list số, khi evaluate chuẩn nhận đủ +1 pt).
+> - **15 câu Abstained (0 pt):** Được ConfidenceGate chặn đứng an toàn.
+> - **42 câu True Wrongs (-1 pt):** Tập trung vào 8 cụm nguyên nhân kiến trúc: (1) Trả hàng qua bảng lô và số lượng âm; (2) Giá nhập bình quân gia quyền; (3) Hàng ế Rulebook §5; (4) Thu nợ / trả bớt nợ; (5) Dược phẩm / hoạt chất; (6) Mã KH vs Tên KH; (7) Tỷ lệ huỷ đơn; (8) Số đợt giao hàng VLXD.
+
+
 
