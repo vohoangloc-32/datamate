@@ -417,7 +417,7 @@ class EntityLinker:
                 if win_str[0] != alias_nk[0]:
                     continue
                 ratio = SequenceMatcher(None, win_str, alias_nk).ratio()
-                if ratio >= 0.86 and ratio > best_score:
+                if ratio >= 0.92 and ratio > best_score:
                     best_score = ratio
                     best_pk = pk
 
@@ -428,6 +428,12 @@ class EntityLinker:
 
     def _link_category(self, q_nk: str, q_padded: str, res: LinkedEntities) -> None:
         for catn, catdisp in self.categories:
+            # Avoid matching verb 'trả' (pay/return) as category 'Trà' (tea)
+            if catn == "tra" and (
+                re.search(r"\btra\s+(?:bang|qua|no|lai|tien|ck|cod|tm|the|momo|zalopay|vnpay|ngan\s+hang|dien\s+tu|gop)\b", q_nk)
+                or any(k in q_nk for k in ("tra hang", "doi tra", "tra lai", "tra no", "khach tra", "don tra", "tra bang"))
+            ):
+                continue
             if f" {catn} " in q_padded or f" nhom {catn} " in q_padded:
                 res.category_norm = catn
                 res.category_display = catdisp
@@ -469,35 +475,38 @@ class EntityLinker:
             res.requested_category_missing = True
 
     def _link_filters(self, q_clean: str, q_nk: str, q_padded: str, res: LinkedEntities) -> None:
-        # Room / Area
-        if "phong lanh" in q_nk or "may lanh" in q_nk:
-            res.room_area_norm = "phong lanh"
-        elif "san vuon" in q_nk or "ngoai troi" in q_nk or re.search(r"\b(?:khu vuc|ban|ngoi|o)\s+san\b", q_nk):
-            res.room_area_norm = "san"
-        elif "trong nha" in q_nk:
-            res.room_area_norm = "trong nha"
-        elif "tang 1" in q_nk or "tang tret" in q_nk or "lau tret" in q_nk:
-            res.room_area_norm = "tang 1"
-        elif "tang 2" in q_nk or "lau 1" in q_nk:
-            res.room_area_norm = "tang 2"
+        # Room / Area (only if business has room area capability and not part of product name)
+        pname_full = norm_key(res.product_name or "")
+        if self.cb.capabilities.get("has_room_area"):
+            if "phong lanh" in q_nk or "may lanh" in q_nk:
+                res.room_area_norm = "phong lanh"
+            elif "san vuon" in q_nk or "ngoai troi" in q_nk or re.search(r"\b(?:khu vuc|ban|ngoi|o)\s+san\b", q_nk):
+                res.room_area_norm = "san"
+            elif "trong nha" in q_nk and "trong nha" not in pname_full:
+                res.room_area_norm = "trong nha"
+            elif "tang 1" in q_nk or "tang tret" in q_nk or "lau tret" in q_nk:
+                res.room_area_norm = "tang 1"
+            elif "tang 2" in q_nk or "lau 1" in q_nk:
+                res.room_area_norm = "tang 2"
 
         # Channel
-        if any(k in q_nk for k in ("tai quay", "tai tiem", "tai quan", "ban truc tiep", "mua truc tiep", "truc tiep tai")):
-            res.channel_norm = "in_store"
-        elif re.search(r"\bzalo\b", q_nk) and "zalopay" not in q_nk:
-            res.channel_norm = "zalo"
-        elif any(k in q_nk for k in ("qua dien thoai", "goi dien", "dat qua dt", "ban qua dien thoai")):
-            res.channel_norm = "phone"
-        elif any(k in q_nk for k in ("app giao do an", "grabfood", "shopeefood", "befood", "qua app", "tren app")):
-            res.channel_norm = "delivery_app"
-        elif any(k in q_nk for k in ("san tmdt", "thuong mai dien tu", "shopee", "lazada", "tiktok", "qua san", "tren san")):
-            res.channel_norm = "ecommerce"
-        elif any(k in q_nk for k in ("facebook", "fanpage")) or re.search(r"\b(?:fb|website|web)\b", q_nk):
-            res.channel_norm = "online"
-        elif "mang ve" in q_nk and not re.search(r"mang ve\s+(?:bao nhieu|bnhiu|bn|may|tong|doanh thu|tien|duoc)", q_nk):
-            res.channel_norm = "mang ve"
-        elif "tai ban" in q_nk or "an tai cho" in q_nk or "uong tai cho" in q_nk:
-            res.channel_norm = "tai ban"
+        if True:
+            if any(k in q_nk for k in ("tai quay", "tai tiem", "tai quan", "ban truc tiep", "mua truc tiep", "truc tiep tai")):
+                res.channel_norm = "in_store"
+            elif re.search(r"\bzalo\b", q_nk) and "zalopay" not in q_nk:
+                res.channel_norm = "zalo"
+            elif any(k in q_nk for k in ("qua dien thoai", "goi dien", "dat qua dt", "ban qua dien thoai")):
+                res.channel_norm = "phone"
+            elif any(k in q_nk for k in ("app giao do an", "grabfood", "shopeefood", "befood", "qua app", "tren app")):
+                res.channel_norm = "delivery_app"
+            elif any(k in q_nk for k in ("san tmdt", "thuong mai dien tu", "shopee", "lazada", "tiktok", "qua san", "tren san")):
+                res.channel_norm = "ecommerce"
+            elif any(k in q_nk for k in ("facebook", "fanpage")) or re.search(r"\b(?:fb|website|web)\b", q_nk):
+                res.channel_norm = "online"
+            elif "mang ve" in q_nk and not re.search(r"\bmang ve\s+(?:nhieu|nhiu|bao nhieu|bnhiu|bn|may|tong|doanh thu|tien|duoc|lai|loi)\b", q_nk):
+                res.channel_norm = "mang ve"
+            elif "tai ban" in q_nk or "an tai cho" in q_nk or "uong tai cho" in q_nk:
+                res.channel_norm = "tai ban"
 
         # Payment method
         if "tien mat" in q_nk:
@@ -576,7 +585,7 @@ class EntityLinker:
                 return
 
         m_cnt_u = re.search(
-            r"(?:bao nhieu|bnhiu|bn|may|tinh theo|quy ra)\s+(xe 4m3|cuon 10m|thung|hop|vi|vien|chai|lon|goi|cai|cuon|bao|cay|bo|loc|lo|tuyp|bich|kg|m3|mieng|chiec|ly|phan(?!\s+tram\b)|suat|hu|thanh)\b",
+            r"(?:bao nhieu|bnhiu|bn|may|tinh theo|quy ra)\s+(xe 4m3|cuon 10m|thung|hop|vi|vien|chai|lon|goi|cai|cuon|bao|cay|bo|loc|lo|tuyp|bich|kg|m3|mieng|chiec|ly|phan(?!\s+tram\b)|suat|hu|thanh|noi|to|chen|dia|binh|cay)\b",
             q_nk,
         )
         if m_cnt_u:

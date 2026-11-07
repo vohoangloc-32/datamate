@@ -123,7 +123,7 @@ class ParsedQuestion:
 
 def _extract_top_k(q_nk: str) -> int:
     m = re.search(
-        r"\b(?:top\s*(\d+)|(\d+)\s+(?:khach|mat hang|san pham|mon|sp|dong may|thuoc|nguoi|nhan vien|tho|xe|hang))\b",
+        r"\b(?:top\s*(\d+)|(\d+)\s+(?:khach|mat hang|san pham|mon|sp|dong may|thuoc|nguoi|nhan vien|tho|xe|hang|best seller|bestseller|do|item))\b",
         q_nk,
     )
     if m:
@@ -264,19 +264,21 @@ def parse_question(
     if any(k in q_nk for k in ("no them", "ghi no them", "mua chiu them")) and any(k in q_nk for k in ("tra no", "tra bot no", "tra duoc")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "customer_debt_added_and_repaid", "list", tw, ent)
 
-    if any(k in q_nk for k in ("tra bot no", "khach tra no", "thu no", "thu hoi no")):
+    if ("thu hoi" in q_nk and ("cong no" in q_nk or "no" in q_nk)) or any(
+        k in q_nk for k in ("tra bot no", "khach tra no", "thu no", "thu hoi no", "thu hoi duoc", "thu hoi tien no", "tien thu no")
+    ):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "debt_repaid_in_period", "number", tw, ent)
 
     if any(k in q_nk for k in ("tuoi no", "0 7 ngay", "8 15 ngay", "tren 15 ngay")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "debt_aging_buckets", "list", tw, ent)
 
-    m_debt_age = re.search(r"(?:dat\s+qua|tuoi\s+qua|no\s+qua|qua)\s+(\d+)\s+ngay", q_nk)
+    m_debt_age = re.search(r"(?:dat\s+qua|tuoi\s+qua|no\s+qua|qua|hon|tren|cach\s+do\s+hon)\s+(\d+)\s+ngay", q_nk)
     if m_debt_age and ("no" in q_nk or "chua tra" in q_nk):
         return ParsedQuestion(
             qid, biz_id, q_text, as_of_dt, "debt_over_n_days", "number", tw, ent, debt_age_days=int(m_debt_age.group(1))
         )
 
-    if any(k in q_nk for k in ("con no", "cong no", "chua tra het no", "dang no", "thieu tien", "no chua thu", "khach no", "chua tra", "chua dong", "tien no")):
+    if any(k in q_nk for k in ("con no", "cong no", "chua tra het no", "dang no", "thieu tien", "no chua thu", "khach no", "chua tra", "chua dong", "tien no", "khach con thieu", "con thieu", "tien con thieu", "so tien con thieu", "con thieu bao nhieu", "con thieu bn")):
         if any(k in q_nk for k in ("moi nguoi", "tung nguoi", "kem so tien", "va so no", "cho bang")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "debt_top_customers_table", "table", tw, ent, top_k=max(top_k, 3))
         if any(k in q_nk for k in ("bao nhieu khach", "bnhiu khach", "bn khach", "so khach", "may khach", "co may khach", "dem khach", "cac khach")):
@@ -299,6 +301,9 @@ def parse_question(
         if any(k in q_nk for k in ("may mat hang", "bao nhieu mat hang", "so mat hang", "may san pham", "bao nhieu san pham")):
             return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "expiring_product_count", "number", tw, ent)
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "expiring_product_list", "list", tw, ent)
+
+    if bool(re.search(r"\b(?:mon e|hang e|ban e|e am)\b", q_nk)) or any(k in q_nk for k in ("k ban dc cai nao", "khong ban dc cai nao", "khong ban duoc cai nao", "k ban duoc cai nao")):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "unsold_product_count", "number", tw, ent)
 
     if any(k in q_nk for k in ("dang het hang", "bi het hang", "het hang luc cuoi ngay", "het hang cuoi ngay")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "out_of_stock_product_count", "number", tw, ent)
@@ -341,8 +346,12 @@ def parse_question(
     if "chi phi" in q_nk or "tien chi" in q_nk:
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "expense_total", "number", tw, ent)
 
+    # Net change: import minus sold quantity
+    if any(k in q_nk for k in ("so nhap tru so ban", "lay so nhap tru so ban", "nhap tru ban", "nhap tru di so ban", "nhap tru di ban")):
+        return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "import_minus_sold_qty", "number", tw, ent)
+
     if any(k in q_nk for k in ("lai gop", "loi gop", "loi nhuan gop", "tien lai", "tien loi", "loi nhieu nhat", "lai nhieu nhat", "loi nhat", "lai nhat", "lai cao nhat", "loi cao nhat")):
-        if re.search(r"\b(?:mat hang|san pham|mon|sp|hang|thuoc|loai)\s+nao\b", q_nk) or "top" in q_nk:
+        if re.search(r"\b(?:mat hang|san pham|mon|sp|hang|thuoc|loai)\s+nao\b", q_nk) or "top" in q_nk or any(k in q_nk for k in ("la gi", "la ten gi", "ten la gi")):
             return ParsedQuestion(
                 qid, biz_id, q_text, as_of_dt, "top_profit_product", "list" if top_k > 1 else "string", tw, ent, top_k=top_k
             )
@@ -536,11 +545,23 @@ def parse_question(
     if cb.domain == "phone_shop" and any(k in q_nk for k in ("trung binh 1 may", "trung binh moi may", "binh quan 1 may", "binh quan moi may")):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "phone_avg_price", "number", tw, ent)
 
-    if any(
-        k in q_nk
-        for k in (
-            "trung binh moi don", "trung binh tren mot don", "gia tri trung binh mot don",
-            "binh quan mot don", "binh quan moi don", "binh quan 1 don", "trung binh 1 don",
+    if (
+        any(
+            k in q_nk
+            for k in (
+                "trung binh moi don", "trung binh tren mot don", "gia tri trung binh mot don",
+                "binh quan mot don", "binh quan moi don", "binh quan 1 don", "trung binh 1 don",
+                "binh quan moi bill", "binh quan 1 bill", "binh quan mot bill", "trung binh moi bill",
+                "trung binh 1 bill", "trung binh mot bill", "binh quan moi hoa don", "trung binh moi hoa don",
+                "moi bill mang ve", "moi don mang ve", "moi o do mang ve", "moi o do", "trung binh mot o do",
+                "trung binh moi o do", "binh quan moi o do", "binh quan moi order", "binh quan 1 order",
+                "trung binh moi order", "trung binh 1 order",
+            )
+        )
+        or (
+            any(tb in q_nk for tb in ("trung binh", "binh quan"))
+            and any(md in q_nk for md in ("moi don", "1 don", "mot don", "moi bill", "1 bill", "mot bill", "moi order", "1 order", "mot order", "moi hoa don", "tren mot don", "tren moi don"))
+            and not any(k in q_nk for k in ("moi ngay", "moi bua", "1 may", "moi may"))
         )
     ):
         return ParsedQuestion(qid, biz_id, q_text, as_of_dt, "revenue_per_order_avg", "number", tw, ent)
@@ -553,32 +574,32 @@ def parse_question(
     # ------------------------------------------------------------------
     # 17. Threshold Filters (Order Revenue, Daily Revenue, Product Order Count, Customer Order Count)
     # ------------------------------------------------------------------
-    m_prod_ord_thr = re.search(r"(?:xuat hien|co mat|ban ra).*?(?:tu\s+|it nhat\s+|tren\s+)?(\d+)\s*don", q_nk)
+    m_prod_ord_thr = re.search(r"(?:xuat hien|co mat|ban ra|duoc mua|dc mua|mua o|mua trong).*?(?:tu\s+|it nhat\s+|tren\s+|o\s+|tai\s+|≥\s*|>=?\s*)?(\d+)\s*(?:don|bill|hoa don)", q_nk)
     if m_prod_ord_thr and any(k in q_nk for k in ("san pham", "mat hang", "mon", "sp", "thuoc")):
         return ParsedQuestion(
             qid, biz_id, q_text, as_of_dt, "product_count_by_order_threshold", "number", tw, ent, threshold_value=float(m_prod_ord_thr.group(1))
         )
 
-    m_cust_ord_thr = re.search(r"(?:mua|co|dat)\s+(?:da\s+mua\s+)?(?:tu\s+|it nhat\s+|tren\s+)?(\d+)\s*don", q_nk)
-    if m_cust_ord_thr and any(k in q_nk for k in ("bao nhieu khach", "nhieu khach", "bnhiu khach", "bn khach", "may khach", "so khach", "dem so khach")):
+    m_cust_ord_thr = re.search(r"(?:mua|co|dat)\s+(?:da\s+mua\s+)?(?:tu\s+|it nhat\s+|tren\s+|≥\s*|>=?\s*)?(\d+)\s*(?:don|bill|hoa don)", q_nk)
+    if m_cust_ord_thr and any(k in q_nk for k in ("bao nhieu khach", "nhieu khach", "bnhiu khach", "bn khach", "may khach", "so khach", "dem so khach", "dem khach")):
         op = "gt" if ("tren " in q_nk and "tro len" not in q_nk and "≥" not in q_text and ">=" not in q_text) else "gte"
         return ParsedQuestion(
             qid, biz_id, q_text, as_of_dt, "customer_count_by_order_threshold", "number", tw, ent, threshold_value=float(m_cust_ord_thr.group(1)), threshold_op=op
         )
 
     m_thr = re.search(
-        r"(?:co\s+)?(?:tien\s+hang|gia\s+tri|doanh\s+thu|tong\s+tien|don\s+hang|don|ban\s+duoc|thu\s+duoc|dthu)\s+(?:dat\s+|tu\s+|tren\s+|co\s+doanh\s+thu\s+(?:tu\s+)?|≥\s*|>=?\s*)?([\d.,]+\s*(?:dong|trieu|nghin|ngan|cu|tr\d*|k|d|đ)?)\s*(?:tro\s+len|hon)?",
+        r"(?:co\s+)?(?:tien\s+hang|gia\s+tri|doanh\s+thu|tong\s+tien|don\s+hang|don|ban\s+duoc|thu\s+duoc|dthu).*?(?:dat\s+|tu\s+|tren\s+|co\s+doanh\s+thu\s+(?:tu\s+)?|≥\s*|>=?\s*)([\d.,]+\s*(?:dong|trieu|nghin|ngan|cu|tr\d*|k|d|đ)?)\s*(?:tro\s+len|hon)?",
         q_noacc,
     )
     if m_thr:
         val_t = parse_vn_number(m_thr.group(1))
         if val_t is not None and val_t >= 1000:
             op = "gt" if ("tren " in q_noacc and "tro len" not in q_noacc and "≥" not in q_text and ">=" not in q_text) else "gte"
-            if any(k in q_nk for k in ("bao nhieu ngay", "bnhiu ngay", "bn ngay", "may ngay", "so ngay", "may bua", "bao nhieu bua", "bnhiu bua")):
+            if any(k in q_nk for k in ("bao nhieu ngay", "bnhiu ngay", "bn ngay", "may ngay", "so ngay", "may bua", "bao nhieu bua", "bnhiu bua", "nhieu ngay", "nhieu bua")):
                 return ParsedQuestion(
                     qid, biz_id, q_text, as_of_dt, "day_count_by_revenue_threshold", "number", tw, ent, threshold_value=float(val_t), threshold_op=op
                 )
-            if any(k in q_nk for k in ("bao nhieu don", "bnhiu don", "bn don", "may don", "so don")):
+            if any(k in q_nk for k in ("bao nhieu don", "bnhiu don", "bn don", "may don", "so don", "dem so don", "dem don", "dem so don hang", "dem don hang", "so don hang", "bao nhieu bill", "bnhiu bill", "may bill", "so bill", "bao nhieu order", "may order", "so order", "dem order")):
                 return ParsedQuestion(
                     qid, biz_id, q_text, as_of_dt, "order_count", "number", tw, ent, threshold_value=float(val_t), threshold_op=op
                 )
@@ -601,6 +622,8 @@ def parse_question(
             "ban dc may don", "duoc bnhiu don", "so bill", "bao nhieu bill", "may bill", "so hoa don", "bao nhieu hoa don",
             "may don hang", "bao nhieu don hang", "bnhiu don hang", "bn don hang", "dem don", "co may don",
             "duoc may don", "co bao nhieu don", "co bnhiu don", "may phieu", "bao nhieu phieu", "bnhiu phieu",
+            "bao nhieu order", "bnhiu order", "bn order", "may order", "so order", "nhieu order", "nhieu don", "nhieu bill",
+            "total bao nhieu order", "co bao nhieu order", "co bnhiu order", "co may order", "tat ca bao nhieu order",
         )
     ) or any(k in q_nk for k in ("may dh", "bao nhieu dh", "bnhiu dh", "mi dh"))
 

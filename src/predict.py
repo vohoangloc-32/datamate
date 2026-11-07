@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import date
@@ -217,6 +218,7 @@ class DataMatePipeline:
         prompt_token_counter: Optional[Callable[[str], int]] = None,
         max_prompt_tokens: Optional[int] = None,
         analysis_plan_enabled: bool = False,
+        deterministic_enabled: bool = True,
     ):
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
@@ -270,6 +272,23 @@ class DataMatePipeline:
 
         self.max_retries = max_retries
         self.analysis_plan_enabled = analysis_plan_enabled
+        self.deterministic_enabled = deterministic_enabled
+        self.confidence_threshold = confidence_threshold
+
+        self._deterministic_runner = None
+        if self.deterministic_enabled:
+            try:
+                from runner import DataMateRunner
+                cfg_p = Path(__file__).resolve().parents[1] / "configs" / "baseline.yaml"
+                if not cfg_p.exists():
+                    cfg_p = Path("configs/baseline.yaml")
+                self._deterministic_runner = DataMateRunner(
+                    split_dir=self.data_dir,
+                    config_path=cfg_p,
+                )
+                logger.info("Initialized DataMateRunner front-line deterministic engine")
+            except Exception as e:
+                logger.info("DataMateRunner front-line not loaded: %s", e)
 
     def _ensure_llm_loaded(self) -> RetryEngine:
         """Lazily load the LLM model if not provided."""
@@ -335,6 +354,27 @@ class DataMatePipeline:
         as_of_date = question_record["as_of_date"]
 
         self.question_logger.start_question(q_id)
+
+        # 0. Front-line high-precision deterministic rulebook engine
+        if self._deterministic_runner is not None and re.match(r"^(?:biz_\d{3}|dev_\d{3})$", str(biz_id)):
+            try:
+                sub_rec, pq, exec_res = self._deterministic_runner.answer_single(question_record)
+                if sub_rec.type != "abstain" and exec_res.confidence >= self.confidence_threshold:
+                    self.question_logger.log_question(
+                        question_id=q_id,
+                        question_text=question,
+                        business_id=biz_id,
+                        final_answer={"type": sub_rec.type, "answer": sub_rec.answer},
+                        generated_code="[DETERMINISTIC_ENGINE]",
+                    )
+                    ans_dict = {"type": sub_rec.type, "answer": sub_rec.answer}
+                    if sub_rec.reason:
+                        ans_dict["reason"] = sub_rec.reason
+                    return ans_dict
+                logger.info("Question %s: deterministic engine returned '%s' (conf=%.2f), falling back to LLM",
+                            q_id, sub_rec.type, exec_res.confidence)
+            except Exception as e:
+                logger.warning("Deterministic engine error on %s: %s; falling back to LLM", q_id, e)
 
         try:
             # 1. Load business data and apply Rulebook metric-aware filtering

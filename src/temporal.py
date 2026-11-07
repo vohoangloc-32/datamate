@@ -382,7 +382,7 @@ def resolve_question_time_window(
 
     # "3 tháng liền nhau kết thúc ở tháng M/YYYY"
     m_mm2 = re.search(
-        r"(\d+)\s*thang\s*(?:lien\s*nhau|lien\s*tiep|lien)?\s*(?:ket\s*thuc|tinh\s*toi|tinh\s*den|den|toi)?\s*(?:o|vao|tai)?\s*(?:thang|th|t)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d|\d{2})",
+        r"\b([2-9]|\d{2,})\s*thang\s*(?:lien\s*nhau|lien\s*tiep|lien)?\s*(?:ket\s*thuc|tinh\s*toi|tinh\s*den|den|toi)?\s*(?:o|vao|tai)?\s*(?:thang|th|t)?\s*(\d{1,2})\s*(?:[/\-]|nam\s*)(202\d|\d{2})",
         q_noacc,
     )
     if m_mm2:
@@ -448,6 +448,9 @@ def resolve_question_time_window(
         w = TimeWindow(t_start, min(t_end, as_of_date), label=f"tet_{t_year}", shift_filter=shift_filter, specific_weekday=specific_wday)
         if "truoc tet" in q_noacc or "ngay truoc" in q_noacc:
             w.compare_window = TimeWindow(pre_start, pre_end, label=f"pre_tet_{t_year}")
+        elif any(k in q_noacc for k in ("nam ngoai", "nam truoc", "cung ky nam truoc", "tet truoc")):
+            prev_start, prev_end, _, _ = cal.get_tet_window(t_year - 1)
+            w.compare_window = TimeWindow(prev_start, prev_end, label=f"tet_{t_year - 1}")
         return w
 
     # Specific Lunar Date ("mùng 1 Tết 2026", "rằm tháng 7 năm 2025", "mùng 1 tháng 8 âm lịch 2025")
@@ -485,6 +488,17 @@ def resolve_question_time_window(
         m_anc = re.search(r"(?:tai\s+ngay|ngay)\s+(\d{1,2})[/\-](\d{1,2})[/\-](202\d)", q_noacc)
         anc = dt.date(int(m_anc.group(3)), int(m_anc.group(2)), int(m_anc.group(1))) if m_anc else as_of_date
         return TimeWindow(anc, anc + dt.timedelta(days=n_d), label="expiry_window")
+
+    # 5b. Range from now: "từ nay đến (hết) ngày DD/MM/YYYY"
+    m_rng_from_now = re.search(
+        r"tu\s+nay\s+(?:den|toi)\s+(?:het\s+)?(?:ngay\s+)?(\d{1,2})[/\-](\d{1,2})[/\-](202\d)",
+        q_noacc,
+    )
+    if m_rng_from_now:
+        m_anc = re.search(r"(?:tai\s+ngay|theo\s+ton\s+kho\s+ngay|ngay)\s+(\d{1,2})[/\-](\d{1,2})[/\-](202\d)", q_noacc)
+        anc = dt.date(int(m_anc.group(3)), int(m_anc.group(2)), int(m_anc.group(1))) if m_anc else as_of_date
+        d_end = dt.date(int(m_rng_from_now.group(3)), int(m_rng_from_now.group(2)), int(m_rng_from_now.group(1)))
+        return TimeWindow(anc, d_end, label="explicit_range", shift_filter=shift_filter, specific_weekday=specific_wday)
 
     # 6. Cumulative / Point-in-time explicit date ("tính đến hết ngày DD/MM/YYYY", "tại ngày DD/MM/YYYY", "cuối ngày DD/MM/YYYY", "hết ngày DD/MM/YYYY")
     m_cum = re.search(

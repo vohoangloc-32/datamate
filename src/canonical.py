@@ -91,7 +91,11 @@ QUESTION_TOKEN_MAP: Dict[str, str] = {
     "zia": "về", "zo": "vào", "vs": "với",
     "đh": "đơn hàng", "dh": "đơn hàng", "đơng": "đơn", "tiềng": "tiền",
     "kòn": "còn", "tíh": "tính", "wán": "quán", "mik": "mình", "mô": "nào",
-    "sp": "sản phẩm", "hd": "hóa đơn", "hđ": "hóa đơn", "kh": "khách hàng",
+    "hđ": "hóa đơn", "kh": "khách hàng",
+    "ck": "chuyển khoản", "tm": "tiền mặt", "tien tuoi": "tiền mặt", "tiền tươi": "tiền mặt",
+    "ddown": "đơn", "cuwar": "cửa", "hangf": "hàng", "binhf": "bình", "cos": "có",
+    "dduwowcj": "được", "toongr": "tổng", "leen": "lên", "heets": "hết", "ddos": "đó",
+    "ddat": "đạt", "ddang": "đang", "ddi": "đi",
     "ncc": "nhà cung cấp", "nhìu nhứt": "nhiều nhất", "caonhất": "cao nhất",
     "ít nhứt": "ít nhất", "ngừi": "người", "nượt": "lượt", "xửa": "sửa",
     "báng": "bán", "tỉ nệ": "tỉ lệ", "dảm": "giảm", "xo": "so",
@@ -118,6 +122,8 @@ def normalize_question_text(text: str) -> str:
     s = re.sub(r"\bdào\s+mấy\s+giờ\b", "vào mấy giờ", s, flags=re.IGNORECASE)
     s = re.sub(r"\bhông\s+kê\s+đơn\b", "không kê đơn", s, flags=re.IGNORECASE)
     s = re.sub(r"\bmí\s*%", "mấy %", s, flags=re.IGNORECASE)
+    s = re.sub(r"\btrung\s+binhf\b", "trung bình", s, flags=re.IGNORECASE)
+    s = re.sub(r"\btiền\s+tươi\b", "tiền mặt", s, flags=re.IGNORECASE)
     return s
 
 
@@ -2176,7 +2182,7 @@ def _build_financials_and_aux(cb: CanonicalBusiness, tables: Dict[str, pd.DataFr
                 if not cb.payments.empty:
                     # In businesses with payment tables (SoQuy, thanh_toan, BanHang_PhieuThu),
                     # an order is a credit order if payment_method == 'debt' or debt_at_end > 0
-                    is_credit = (pm == "debt") or (debt_end is not None and pd.notna(debt_end) and float(debt_end) > 0)
+                    is_credit = (pm == "debt")
                     if is_credit:
                         sd_p = same_day_paid.get(oid, 0.0)
                         init_debts.append(max(0.0, tot - sd_p))
@@ -2191,7 +2197,7 @@ def _build_financials_and_aux(cb: CanonicalBusiness, tables: Dict[str, pd.DataFr
                     else:
                         init_debts.append(0.0)
             cb.orders["initial_debt"] = init_debts
-            cb.orders.loc[cb.orders["initial_debt"] > 0, "payment_method"] = "debt"
+            # Keep original payment_method (do not overwrite cod to debt)
 
     # 4. Warranties (Bảo hành in dev_014)
     if "Bảo hành" in tables:

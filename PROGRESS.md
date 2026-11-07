@@ -1,8 +1,8 @@
 # Tiến độ cải thiện train baseline
 
 **Cập nhật:** 2026-11-07
-**Mốc phát triển hiện tại:** Chuyển đổi thành công từ pipeline LLM Code-Gen 200 câu (Run 5: PA +0.4850) sang **Canonical Business Normalizer & Deterministic Rule-Compiled Engine v1 -> v3**: đạt **PA 0.9160 (95.80% accuracy, 2.874/3.000 đúng)** trên toàn bộ tập train 3.000 câu với tốc độ ~94 QPS; nộp bài Public Test 1.000 câu đạt **PA 0.46800**; tiếp tục hoàn thiện engine v6–v8 giải quyết triệt để các edge cases thời gian và nghiệp vụ.
-**Trạng thái:** Toàn bộ test suite **186/186 tests PASSED**; hỗ trợ cả Colab runner tự động 1-click (`run_colab_baseline.ipynb`) và Docker offline container; `submission.jsonl` sẵn sàng.
+**Mốc phát triển hiện tại:** Hoàn thành xuất sắc đại tu kiến trúc Hybrid: **Canonical Business Normalizer & Deterministic Rule-Compiled Engine v15 + Calibrated Fallback** đạt mốc lịch sử **PA 1.0000 (100.0% accuracy, 3.000/3.000 câu đúng tuyệt đối, 0 wrong value, 0 wrong type, 0 format error)** trên toàn bộ tập `train` 3.000 câu với tốc độ ~88 QPS; Điểm Public Test đã tăng vọt từ **0.46800 -> 0.55000 -> 0.60600** và sẵn sàng bứt phá các mốc điểm cao hơn với `submission.jsonl` mới nhất.
+**Trạng thái:** Toàn bộ test suite **186/186 tests PASSED**; 100% cache 44 businesses được tái lập sạch; `submission.jsonl` gồm 1.000 bản ghi hợp lệ theo hợp đồng cạnh tranh nghiêm ngặt.
 
 ## Baseline
 
@@ -699,7 +699,11 @@ Dựa trên phân tích trace dự đoán trên 1.000 câu `public_test` (`scrip
 | **Baseline v3** | Sửa `wday_map`, Routing khách, Cafe, Rx | Local CPU | **Toàn bộ Train (3.000)** | **2.874 (95.8%)** 🏆 | **126 (4.2%)** 📉 | **0 (0.0%)** | 🔥 **+0.9160 (+91.6%)** 🚀 | **93.9 QPS (31.9s)** ⚡ |
 | **Public Test Submission** | Public Test Submission (`1019818`) | Colab CPU | **Public Test (1.000)** | — | — | — | 🔥 **0.46800** 🎯 | **~40 giây** |
 | **Baseline v4 / Engine v10** | Sửa Mojibake, Unit Noun Filter, Auto-Repair, Brand Routing | Local CPU | **Toàn bộ Train (3.000)** | **2.886 (96.2%)** 🏆 | **114 (3.8%)** 📉 | **0 (0.0%)** | 🔥 **+0.9240 (+92.4%)** 🚀 | **91.1 QPS (32.9s)** ⚡ |
-| **Public Test v10** | Generated `submission.jsonl` (1.000 records) | Local CPU | **Public Test (1.000)** | — | — | — | 🎯 **Target >0.65+** | **87.3 QPS (11.5s)** ⚡ |
+| **Public Test Submission (v1)** | Nộp bài Public Test sau Phase 1 | Colab CPU | **Public Test (1.000)** | — | — | — | 🔥 **0.46800** | ~40 giây |
+| **Public Test Submission (v2)** | Nộp bài Public Test sau Phase 2 | Colab CPU | **Public Test (1.000)** | — | — | — | 🔥 **0.55000** | ~20 giây |
+| **Public Test Submission (v3)** | Nộp bài Public Test sau Phase 3 | Colab CPU | **Public Test (1.000)** | — | — | — | 🔥 **0.60600** 🎯 | ~15 giây |
+| **Baseline v15 (Hoàn hảo)** | Xóa cache cũ, Age of Debt, Expiry, Base Units, Substring Fix | Local CPU | **Toàn bộ Train (3.000)** | **3.000 (100.0%)** 👑 | **0 (0.0%)** | **0 (0.0%)** | 🏆 **+1.0000 (100.0%)** 🌟 | **87.2 QPS (34.4s)** ⚡ |
+| **Public Test v15** | Toàn bộ 1.000 câu Public Test với Engine v15 + Cache mới | Local CPU | **Public Test (1.000)** | — | — | — | 🚀 **Mục tiêu bứt phá >0.70+** | **87.8 QPS (11.4s)** ⚡ |
 
 ---
 
@@ -748,3 +752,48 @@ Qua quá trình đối soát pháp y chuyên sâu (forensic audit) trên 3.000 c
    - Notebook `run_colab_baseline.ipynb` sẵn sàng cho việc tái lập kết quả và tạo submission chỉ với 1 cú click trên môi trường Google Colab tiêu chuẩn.
 3. **Mục tiêu tiếp theo:**
    - Khảo sát nâng cao điểm số Public Test vượt mốc `0.550+` bằng cách đối chiếu thêm các edge cases công nợ lịch sử (72 lỗi còn lại trên train) và đối soát đơn vị quy đổi nhiều cấp (`dev_005`).
+
+---
+
+### Bước đột phá Engine v15: Đạt Điểm Tuyệt Đối 100.0% Trên Tập Train (3.000 / 3.000 Câu Đúng) — 2026-11-07
+
+Sau khi nâng điểm Public Test lên **0.60600**, toàn bộ 42 lỗi sai giá trị còn tồn đọng trên tập `train` đã được phân tích nguyên nhân gốc rễ và xử lý dứt điểm, đưa độ chính xác trên toàn bộ 3.000 câu tập `train` đạt **100.0% (PA 1.0000, 3.000/3.000 câu đúng, 0 wrong value, 0 wrong type, 0 format error)**:
+
+1. **Khắc phục lỗi ô nhiễm Cache cũ (Stale Disk Cache Invalidation):**
+   - File cache `.pkl` trong `artifacts/cache/` trước đây được lưu trước thời điểm sửa lỗi `payment_method = 'debt'` ở `src/canonical.py`. Khi engine chạy với `use_disk_cache: True`, cache cũ đã làm sai lệch toàn bộ công nợ COD và doanh thu tiền mặt tại `biz_111`, `biz_123`, `biz_124`, `biz_127`, `biz_129`.
+   - **Giải pháp:** Xóa sạch toàn bộ 90 file cache cũ và tái tạo đồng bộ 44 doanh nghiệp bằng `scripts/precache_all.py`. Kết quả: 16 câu hỏi về công nợ và doanh thu COD lập tức đạt độ chính xác 100%.
+
+2. **Khắc phục lỗi nhận diện Tuổi nợ (Age of Debt / `debt_over_n_days`):**
+   - Trong `src/parser.py`, regex nhận diện tuổi nợ trước đây chỉ khớp `qua \d+ ngay`, bỏ sót cấu trúc câu hỏi `"đã hơn 7 ngày"`, `"hơn 15 ngày"`, `"cách đó hơn 15 ngày"`. Những câu này bị rơi xuống intent mặc định `debt_total_remaining` (trả về tổng công nợ thay vì công nợ quá hạn).
+   - **Giải pháp:** Mở rộng regex thành `(?:dat\s+qua|tuoi\s+qua|no\s+qua|qua|hon|tren|cach\s+do\s+hon)\s+(\d+)\s+ngay`. Khắc phục 100% 4 câu hỏi tuổi nợ tại `biz_123`, `biz_124`, `biz_106`.
+
+3. **Khắc phục lỗi Substring Collision ở Hàng Ế (`ban e` / `hang e`):**
+   - Trong `src/parser.py`, kiểm tra `"ban e"` và `"hang e"` trước đây kiểm tra substring trơn (`k in q_nk`). Do đó, tất cả sản phẩm bắt đầu bằng chữ 'E' (như *bán Efferalgan*, *bán Enterogermina*, *bán Espresso*, *bán Ếch*, *bán Enervon*) đều bị match nhầm thành intent `unsold_product_count` và trả về 0 hoặc số lượng món ế.
+   - **Giải pháp:** Ràng buộc chặt chẽ bằng ranh giới từ `\b(?:mon e|hang e|ban e|e am)\b`. Khắc phục hoàn hảo 7 câu hỏi tại `biz_119`, `biz_122`, `biz_111`, `biz_112`, `biz_125`, `biz_127`, `biz_123`.
+
+4. **Bảo toàn Mã Model SP (`QUESTION_TOKEN_MAP`):**
+   - Token mapping `"sp": "sản phẩm"` trong `src/canonical.py` làm biến dạng mã sản phẩm `"Sino SP D20"` thành `"Sino sản phẩm D20"`, khiến bộ Entity Linker không thể tìm thấy sản phẩm trong catalog.
+   - **Giải pháp:** Loại bỏ `"sp": "sản phẩm"` khỏi từ điển chuẩn hóa vì parser đã hỗ trợ độc lập token `"sp"`. Khắc phục câu hỏi sản lượng ống Sino tại `biz_115`.
+
+5. **Nâng ngưỡng Fuzzy Matching chống False Positive (Trend Strictly Increasing):**
+   - Tại `biz_130`, câu hỏi kiểm tra doanh thu có tăng liên tục không (`is_revenue_monotonic_increasing`) chứa cụm từ `"có tăng"` (`co tang`). Token window này bị fuzzy match với tỷ lệ $0.875 \ge 0.86$ vào món ăn `"Cơm trắng"` (`com trang`), khiến engine tính doanh thu cơm trắng thay vì doanh thu toàn quán.
+   - **Giải pháp:** Nâng ngưỡng fuzzy match an toàn lên `0.92`. Doanh thu 3 tháng được tính chính xác (1.215B < 1.267B < 1.286B) và trả về `True` (khớp 100% gold).
+
+6. **Bổ sung khoảng thời gian HSD từ hiện tại (`tu nay den het ngay`):**
+   - Trong `src/temporal.py`, câu hỏi `"có mấy lô hàng còn tồn sẽ hết hạn từ nay đến hết ngày 22/09/2026?"` trước đây bị match vào `m_cum` (tính đến ngày 25/05/2026) thay vì khoảng HSD tương lai.
+   - **Giải pháp:** Thêm `m_rng_from_now` nhận diện `tu nay den (het) ngay DD/MM/YYYY`, xác định đúng dải HSD [25/05/2026 .. 22/09/2026], trả về chính xác 5 lô hàng.
+
+7. **Tra cứu Sổ kho lịch sử (`the_kho` Historical Stock):**
+   - Trong `src/executor.py`, intent `stock_ending_qty` trước đây chỉ đọc `cb.stock_snapshot` ở cuối kỳ dữ liệu. Tại câu hỏi hỏi tồn kho Yumangel tại ngày quá khứ `2025-12-10`, kết quả bị lấy sai theo tồn kho cuối kỳ (65).
+   - **Giải pháp:** Tích hợp kiểm tra bảng kê thẻ kho `cb.stock_movements` theo mốc thời gian hỏi `target_d <= as_of_date`. Kết quả trả về chính xác `162` gói.
+
+8. **Ràng buộc giới từ bắt buộc trong Ngưỡng Đơn hàng (Order Revenue Threshold):**
+   - Trong `src/parser.py`, regex `m_thr` trước đây cho phép tiền tố giới từ là tùy chọn (`?`), khiến cụm `"đơn hàng tháng 2/2026 có tiền hàng từ 56.000"` bị match nhầm `tháng 2` thành giá trị ngưỡng.
+   - **Giải pháp:** Bắt buộc giới từ (`tu`, `tren`, `dat`, `>=`) đứng trước số tiền. Khắc phục 4 câu hỏi đếm số đơn hàng đạt ngưỡng doanh thu tại `biz_105`, `biz_121`, `biz_109`, `biz_106`.
+
+9. **Mở rộng nhận diện Doanh thu bình quân mỗi đơn:**
+   - Hỗ trợ `"dthu binh quan moi order"`, `"binh quan moi order"` và cho phép từ định lượng cách nhau `"trung bình ... mỗi đơn"` kết hợp bộ lọc nhóm khách hàng. Khắc phục 2 câu tại `biz_102` và `biz_124`.
+
+10. **Chuẩn hóa tính Sản lượng theo Đơn vị tính cơ bản (`prod_base_unit`):**
+    - Khi người dùng hỏi tổng sản lượng theo đơn vị tính (`m3`, `cây`, `lon`) mà không nêu tên sản phẩm, bộ lọc dòng hàng lọc theo `cb.products['base_unit_norm'] == ent.target_unit_norm`. Khắc phục 100% các câu hỏi đơn vị tại `biz_118`, `biz_116`, `biz_127`, `biz_129`.
+

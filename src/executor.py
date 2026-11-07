@@ -164,11 +164,17 @@ def _filter_lines_in_window(
         mask &= lines["product_name"].str.lower().str.strip().str.endswith("(l)", na=False)
 
     if ent.target_unit_norm and not ent.product_key:
-        if ent.target_unit_norm in ("chiec", "cai", "may", "phan", "suat"):
-            if "unit_norm" in lines.columns and (lines["unit_norm"] == ent.target_unit_norm).any():
-                mask &= lines["unit_norm"] == ent.target_unit_norm
+        prod_u = lines["product_key"].map(cb.prod_base_unit).apply(norm_key)
+        if (prod_u == ent.target_unit_norm).any():
+            mask &= prod_u == ent.target_unit_norm
         else:
-            mask &= lines["unit_norm"] == ent.target_unit_norm
+            line_u = lines["unit_norm"] if "unit_norm" in lines.columns else pd.Series("", index=lines.index)
+            eff_u = line_u.where((line_u != "") & line_u.notna(), prod_u)
+            if ent.target_unit_norm in ("chiec", "cai", "may", "phan", "suat"):
+                if (eff_u == ent.target_unit_norm).any():
+                    mask &= eff_u == ent.target_unit_norm
+            else:
+                mask &= eff_u == ent.target_unit_norm
 
     return lines[mask]
 
@@ -190,8 +196,13 @@ def _compute_revenue(cb: CanonicalBusiness, tw: TimeWindow, as_of_date: dt.date,
     # Check if 'không tính phụ kiện' / 'bỏ phụ kiện' in phone_shop
     exclude_acc = cb.domain == "phone_shop" and any(k in q_nk for k in ("khong tinh phu kien", "khong ke phu kien", "bo phu kien"))
     # Check pharmacy prescription filter
-    is_rx_only = cb.domain == "pharmacy" and any(k in q_nk for k in ("thuoc ke don", "ke don")) and not any(k in q_nk for k in ("khong ke don", "ngoai tru thuoc ke don", "tru thuoc ke don"))
-    is_non_rx_only = cb.domain == "pharmacy" and any(k in q_nk for k in ("khong ke don", "ngoai tru thuoc ke don", "tru thuoc ke don"))
+    is_non_rx_only = cb.domain == "pharmacy" and any(
+        k in q_nk for k in (
+            "khong ke don", "k ke don", "k can don", "khong can don", "khong can toa", "k can toa",
+            "k don", "khong don", "khong theo don", "k theo don", "ngoai tru thuoc ke don", "tru thuoc ke don", "khong can don bac si",
+        )
+    )
+    is_rx_only = cb.domain == "pharmacy" and not is_non_rx_only and any(k in q_nk for k in ("thuoc ke don", "ke don", "can don", "theo don", "can toa"))
 
     if _has_product_level_filter(ent) or exclude_acc or is_rx_only or is_non_rx_only:
         lines = _filter_lines_in_window(cb, tw, as_of_date, ent=ent, valid_only=True, apply_product_filter=True)
@@ -544,6 +555,36 @@ def execute_question(
         if intent == "customer_order_threshold_share_pct":
             return ExecutionResult("percent", round_2dec(n_qual / len(grp) * 100.0))
         return ExecutionResult("number", n_qual)
+
+    # ------------------------------------------------------------------
+    # Net Change: Import Minus Sold Quantity
+    # ------------------------------------------------------------------
+    if intent == "import_minus_sold_qty":
+        if not cb.capabilities.get("has_imports") or not cb.capabilities.get("has_line_items"):
+            return _unanswerable("Không có đủ dữ liệu nhập hàng và chi tiết bán hàng.")
+        if not ent.product_key:
+            return _unanswerable("Không xác định được mặt hàng cần tính.")
+        end_d = min(tw.end_date, as_of_dt)
+        pk = ent.product_key
+        il = cb.import_lines[
+            (cb.import_lines["date"] >= tw.start_date)
+            & (cb.import_lines["date"] <= end_d)
+            & (cb.import_lines["status"] != "cancelled")
+            & (cb.import_lines["product_key"] == pk)
+        ]
+        ol = cb.order_lines[
+            (cb.order_lines["date"] >= tw.start_date)
+            & (cb.order_lines["date"] <= end_d)
+            & (cb.order_lines["status"].isin(["completed", "delivering"]))
+            & (cb.order_lines["product_key"] == pk)
+        ]
+        imp_bqty = float(il["base_qty"].sum()) if not il.empty else 0.0
+        sold_bqty = float(ol["base_qty"].sum()) if not ol.empty else 0.0
+        diff_bqty = imp_bqty - sold_bqty
+        t_unit = ent.target_unit_norm or norm_key(cb.prod_base_unit.get(pk, ""))
+        fac = cb.unit_factors.get((pk, t_unit), 1.0)
+        final_val = diff_bqty / fac if fac > 0 else diff_bqty
+        return ExecutionResult("number", _format_qty(final_val))
 
     # ------------------------------------------------------------------
     # Product Quantity Sold & Price on Date & Share %
@@ -1196,6 +1237,15 @@ def _execute_stock_and_expiry(
         tot_val = float((df_s["ending_base_qty"] * df_s["cost_price"].fillna(0.0)).sum())
         return ExecutionResult("number", round_money_vnd(tot_val))
 
+    if intent == "unsold_product_count":
+        if not cb.capabilities.get("has_line_items") or cb.products.empty:
+            return _unanswerable("Không có đủ dữ liệu mặt hàng.")
+        all_pks = set(cb.products["product_key"])
+        lines = _filter_lines_in_window(cb, tw, as_of_dt, ent=None, valid_only=True, apply_product_filter=False)
+        sold_pks = set(lines[lines["base_qty"] > 0]["product_key"]) if not lines.empty else set()
+        unsold_cnt = len(all_pks - sold_pks)
+        return ExecutionResult("number", unsold_cnt)
+
     if intent == "out_of_stock_product_count":
         target_d = tw.end_date
         # If historical date and cb.stock_movements (the_kho) is available (e.g. dev_006 q_c1a3be0d7376)
@@ -1210,8 +1260,13 @@ def _execute_stock_and_expiry(
     # stock_ending_qty
     if not ent.product_key:
         return _unanswerable("Không xác định được mặt hàng cần tra cứu tồn kho.")
-    s_row = cb.stock_snapshot[cb.stock_snapshot["product_key"] == ent.product_key]
-    base_qty = float(s_row.iloc[0]["ending_base_qty"]) if not s_row.empty else 0.0
+    target_d = min(tw.end_date, as_of_dt)
+    if not cb.stock_movements.empty and cb.data_end_date and target_d < cb.data_end_date:
+        mv = cb.stock_movements[(cb.stock_movements["product_key"] == ent.product_key) & (cb.stock_movements["date"] <= target_d)]
+        base_qty = float(mv.iloc[-1]["ending_stock"]) if not mv.empty else 0.0
+    else:
+        s_row = cb.stock_snapshot[cb.stock_snapshot["product_key"] == ent.product_key]
+        base_qty = float(s_row.iloc[0]["ending_base_qty"]) if not s_row.empty else 0.0
 
     if ent.target_unit_pair:
         lg_u, _ = ent.target_unit_pair
@@ -1242,6 +1297,7 @@ def _compute_order_remaining_debts_at_date(
     df_o = cb.orders[
         (cb.orders["date"] <= target_date)
         & (cb.orders["status"] != "cancelled")
+        & (cb.orders["payment_method"] == "debt")
         & (cb.orders["initial_debt"] > 0)
     ].copy()
     if df_o.empty:
@@ -1287,7 +1343,7 @@ def _execute_debt(
     if intent == "debt_repaid_in_period":
         if cb.payments.empty:
             return _unanswerable("Dữ liệu không có lịch sử thu nợ theo ngày.")
-        df_o = cb.orders[(cb.orders["status"] != "cancelled") & (cb.orders["initial_debt"] > 0)]
+        df_o = cb.orders[(cb.orders["status"] != "cancelled") & (cb.orders["payment_method"] == "debt") & (cb.orders["initial_debt"] > 0)]
         oid_to_odt = dict(zip(df_o["order_id"], df_o["date"]))
         is_phone_shop = cb.domain == "phone_shop"
         tot_repaid = 0.0
