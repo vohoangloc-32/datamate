@@ -18,6 +18,7 @@ import unicodedata
 
 from .accounting_cleaner import (
     dedup_order_table_rows,
+    normalize_text,
     remove_subheader_and_subtotal_rows,
 )
 
@@ -644,11 +645,14 @@ def _combine_split_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataF
                 combined_df = pd.concat([t[1] for t in table_list], ignore_index=True)
                 if is_monthly:
                     comb_name = f"{base_prefix}__monthly_combined"
+                    for part_name, _ in table_list:
+                        tables.pop(part_name, None)
+                    tables[comb_name] = combined_df
                 else:
                     comb_name = f"{base_prefix}__combined"
-                tables[comb_name] = combined_df
-                if base_prefix not in tables:
-                    tables[base_prefix] = combined_df
+                    tables[comb_name] = combined_df
+                    if base_prefix not in tables:
+                        tables[base_prefix] = combined_df
     return tables
 
 
@@ -809,6 +813,50 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
                                     .set_index(cida)[cdim]
                                 )
                                 df_b[cdim] = df_b[cidb].map(mapping)
+
+    # Pass 5: Pre-compute 'Số lượng quy đổi' (base-unit quantity) from unit conversion tables (Rulebook §3 & §6)
+    ratio_tokens = ("tilequydoi", "heso", "hesoqd", "tylequydoi")
+    large_unit_tokens = ("donviquydoi", "dvnhap", "dvlon", "donvilon", "dvtquydoi")
+    prod_key_tokens = ("tensanpham", "tenhang", "tenmon", "hang", "tenhh", "tenhanghoa", "masp", "mahang", "masku", "sku")
+    conv_map: Dict[Tuple[str, str], float] = {}
+    for name_a, df_a in table_items:
+        if df_a.empty:
+            continue
+        r_col = next((c for c in df_a.columns if _compact_col_name(c) in ratio_tokens), None)
+        u_col = next((c for c in df_a.columns if _compact_col_name(c) in large_unit_tokens), None)
+        p_cols = [c for c in df_a.columns if _compact_col_name(c) in prod_key_tokens]
+        if r_col and u_col and p_cols:
+            for p_col in p_cols:
+                sub = df_a[[p_col, u_col, r_col]].dropna()
+                for p_val, u_val, r_val in zip(sub[p_col], sub[u_col], sub[r_col]):
+                    try:
+                        f_val = float(r_val)
+                        if f_val > 0:
+                            conv_map[(normalize_text(p_val), normalize_text(u_val))] = f_val
+                    except (ValueError, TypeError):
+                        pass
+
+    if conv_map:
+        qty_col_candidates = ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL")
+        unit_col_candidates = ("ĐVT", "Đơn vị tính", "Đơn vị", "Unit", "dvt", "don_vi_tinh")
+        for name_b, df_b in table_items:
+            if df_b.empty or "Số lượng quy đổi" in df_b.columns or "SL quy đổi" in df_b.columns:
+                continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+                continue
+            q_col = next((c for c in qty_col_candidates if c in df_b.columns), None)
+            u_col = next((c for c in unit_col_candidates if c in df_b.columns), None)
+            p_cols_b = [c for c in df_b.columns if _compact_col_name(c) in prod_key_tokens]
+            if q_col and u_col and p_cols_b:
+                p_col_b = p_cols_b[0]
+                p_norm = df_b[p_col_b].fillna("").astype(str).map(normalize_text)
+                u_norm = df_b[u_col].fillna("").astype(str).map(normalize_text)
+                factors = [
+                    conv_map.get((p, u), 1.0)
+                    for p, u in zip(p_norm, u_norm)
+                ]
+                q_num = pd.to_numeric(df_b[q_col], errors="coerce")
+                df_b["Số lượng quy đổi"] = q_num * pd.Series(factors, index=df_b.index)
 
     return tables
 

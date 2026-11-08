@@ -52,10 +52,27 @@ _SLANG_REPLACEMENTS = [
     (re.compile(r"\bcos\b", re.IGNORECASE), "có"),
     (re.compile(r"\bconf\b", re.IGNORECASE), "còn"),
     (re.compile(r"\bduocj\b", re.IGNORECASE), "được"),
+    (re.compile(r"\bđươc\b", re.IGNORECASE), "được"),
     (re.compile(r"\b(dc|đc)\b", re.IGNORECASE), "được"),
+    (re.compile(r"\bnhieeu\b", re.IGNORECASE), "nhiêu"),
+    (re.compile(r"\bnhìu\b", re.IGNORECASE), "nhiều"),
+    (re.compile(r"\bkhoong\b", re.IGNORECASE), "không"),
+    (re.compile(r"\b(?:hông|hong)\b", re.IGNORECASE), "không"),
+    (re.compile(r"\bhoom\b", re.IGNORECASE), "hôm"),
+    (re.compile(r"\bmaays\b", re.IGNORECASE), "mấy"),
+    (re.compile(r"\bmawtj\b", re.IGNORECASE), "mặt"),
+    (re.compile(r"\bddax\b", re.IGNORECASE), "đã"),
+    (re.compile(r"\bnhoms\b", re.IGNORECASE), "nhóm"),
+    (re.compile(r"\bquys\b", re.IGNORECASE), "quý"),
+    (re.compile(r"\bbinhf\b", re.IGNORECASE), "bình"),
+    (re.compile(r"\bthangs\b", re.IGNORECASE), "tháng"),
+    (re.compile(r"\b(?:tuafn|tuanf)\b", re.IGNORECASE), "tuần"),
+    (re.compile(r"\bnafy\b", re.IGNORECASE), "này"),
+    (re.compile(r"\bngafy\b", re.IGNORECASE), "ngày"),
     # Time slang
     (re.compile(r"\bhqua\b", re.IGNORECASE), "hôm qua"),
     (re.compile(r"\b(?:bua|bữa)\s+qua\b", re.IGNORECASE), "hôm qua"),
+    (re.compile(r"\b(?:bua|bữa)\s+nay\b", re.IGNORECASE), "hôm nay"),
     (re.compile(r"\bhnay\b", re.IGNORECASE), "hôm nay"),
     (re.compile(r"\bthg\b", re.IGNORECASE), "tháng"),
     (re.compile(r"\bth\b(?=\s+\d|\s+này|\s+nay|\s+trước|\s+sau)", re.IGNORECASE), "tháng"),
@@ -88,9 +105,11 @@ _TYPE_INDICATORS = {
         r"tổng\s+(?:số|tiền|doanh|chi|lượng|giá)",
         r"số lượng",
         r"(?:có|đã|được)\s+bao nhiêu",
-        r"mấy\s+(?:cái|chiếc|đơn|sản phẩm|mặt hàng|khách|đĩa|món|bill|hóa đơn)",
-        r"số\s+(?:đơn|bill|hóa đơn)",
-        r"\b(?:bán|ban)\s+(?:được|dc|duoc)\s+nhiêu\s+tiền\b",
+        r"\bmấy\s+(?!tháng\b|năm\b)(?:[a-zA-ZÀ-ỹ0-9]+\s+){0,2}(?:cái|chiếc|đơn|sản phẩm|mặt hàng|khách|đĩa|món|bill|hóa đơn|ly|cốc|tô|bát|nồi|phần|suất|chai|lon|lọ|hộp|vỉ|viên|gói|túi|bịch|thùng|két|lốc|bộ|cây|thanh|tấm|cuộn|bao|tạ|tấn|kg|g|gam|lít|ml|m|mét|m2|m3|xe|chuyến|đợt|lượt|lần|ngày|tuần|quý|ca|loại|nhóm|mã|lô)\b",
+        r"số\s+(?:đơn|bill|hóa đơn|chai|lon|lọ|hộp|vỉ|viên|gói|thùng|cây|kg|ly|đĩa|món|ngày|đợt|lượt|khách)",
+        r"\b(?:bán|ban)\s+(?:được|dc|duoc)\s+(?:bao\s+)?(?:nhiêu|nhiu)\s+tiền\b",
+        r"\b(?:là|được|bán|còn|hết|tốn|mang về)\s+(?:bao\s+)?(?:nhiêu|nhiu)\b(?!\s*%|\s*phần trăm)",
+        r"\b(?:nhiêu|nhiu)\s+(?:tiền|đơn|bill|cái|ly|chai|lon|kg|cây|gói|hộp|viên|lọ|ngày|đợt|khách)\b",
         r"\bbill\b.*\bla\s+nhieu\b",
         r"đếm",
         r"count",
@@ -207,8 +226,9 @@ _AGGREGATION_PATTERNS = {
 # ---------------------------------------------------------------------------
 
 _RANKING_DESC_KEYWORDS = [
-    r"bán chạy nhất", r"nhiều nhất", r"cao nhất", r"lớn nhất",
-    r"đắt nhất", r"top", r"doanh thu cao nhất",
+    r"bán chạy nhất", r"chạy nhất", r"lời nhất", r"lãi nhất", r"giỏi nhất",
+    r"nhiều nhất", r"nhiều\s+(?:đơn|lần|tiền|hàng|sản phẩm|mặt hàng|bill)\s+nhất",
+    r"cao nhất", r"lớn nhất", r"đắt nhất", r"top", r"doanh thu cao nhất",
 ]
 
 _RANKING_ASC_KEYWORDS = [
@@ -293,7 +313,14 @@ class QuestionAnalyzer:
             return ("boolean", 0.9)
 
         normalized_question = _normalize_for_matching(question).strip()
-        if re.match(r"^(?:cho\s+)?bang\s+(?:tong hop|chi tiet|thong ke|\d+)\b", normalized_question):
+        if (
+            re.match(r"^(?:cho\s+)?bang\s+(?:tong hop|chi tiet|thong ke|\d+)\b", normalized_question)
+            or re.search(
+                r"\b(?:top\s+\d+|liet ke\s+\d+|\d+\s+(?:khach(?: hang)?|mat hang|san pham))\b"
+                r".*\b(?:kem\s+(?:so|doanh thu|tien)|va\s+so\s+(?:no|tien|luong|don)\s+cua\s+(?:tung|moi))\b",
+                normalized_question,
+            )
+        ):
             return ("table", 0.9)
         if _pattern_matches(
             r"\b(?:ngày|tháng|năm)\s+nào\b|\bkhi nào\b|bao giờ",
@@ -304,6 +331,14 @@ class QuestionAnalyzer:
             re.search(r"\blan luot\b", normalized_question)
             or len(re.findall(r"\b(?:bao nhieu|bao nhiu|bnhiu|bn)\b", normalized_question)) >= 2
             or re.search(r"\b\d+\s+thang\b.*\bmoi thang\b", normalized_question)
+            or re.search(r"\b\d+\s+thang\b.*\btheo thu tu thoi gian\b", normalized_question)
+            or re.search(r"\bliet ke\s+(?:doanh thu|so don|so luong|tien)\s+\d+\b", normalized_question)
+            or re.search(r"\bmoi ben\s+(?:bao nhieu|la bao nhieu|nhieu)\b", normalized_question)
+            or (
+                len(re.findall(r"\b(?:doanh thu|dthu)\b", normalized_question)) >= 2
+                and re.search(r"\b(?:doanh thu|dthu)\b.*\bva\b.*\b(?:doanh thu|dthu)\b", normalized_question)
+                and not re.search(r"\b(?:so voi|chenh lech|hon|kem|tang|giam|%|phan tram|ti le|ty le)\b", normalized_question)
+            )
             or re.search(
                 r"(?<![/\d])\b\d+\s+(?:khach(?: hang)?|san pham|mat hang)\b"
                 r".*\b(?:mua|chi tieu|ban chay|nhat|top|best seller)\b",
@@ -315,6 +350,10 @@ class QuestionAnalyzer:
             )
             or re.search(
                 r"\bmay\s+\w+\b.*\bva\b.*\bmay\s+\w+\b",
+                normalized_question,
+            )
+            or re.search(
+                r"\bmay\b.*\bchan\b.*\bmay\b.*\ble\b",
                 normalized_question,
             )
         ):

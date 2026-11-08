@@ -62,7 +62,9 @@ class ConfidenceGate:
         """
         # --- Layer 1: Schema Answerability Audit ---
         if question and tables:
-            unanswerable_reason = self._audit_schema_answerability(question, tables)
+            unanswerable_reason = self._audit_schema_answerability(
+                question, tables, question_info=question_info
+            )
             if unanswerable_reason:
                 logger.info("Schema Answerability Gate: %s", unanswerable_reason)
                 return {
@@ -199,6 +201,7 @@ class ConfidenceGate:
         self,
         question: str,
         tables: Dict[str, pd.DataFrame],
+        question_info: Optional[QuestionInfo] = None,
     ) -> Optional[str]:
         """Detect questions asking for entities not recorded anywhere in the business schema."""
         q_norm = normalize_text(question)
@@ -207,7 +210,7 @@ class ConfidenceGate:
         for tname, df in tables.items():
             table_names.add(normalize_text(tname))
             for col in df.columns:
-                if not str(col).startswith("__"):
+                if not str(col).startswith("__") and df[col].notna().any():
                     all_cols.add(normalize_text(col))
 
         # 1. Customer gender
@@ -235,15 +238,90 @@ class ConfidenceGate:
             if not any(any(k in col for k in ("tuoi", "age", "nam sinh", "ngay sinh", "birth")) for col in all_cols):
                 return "customer_age_not_in_schema"
 
-        # 4. Import / Purchasing when no import table exists
-        if any(term in q_norm for term in ("nhap hang", "nhap kho", "tien nhap", "phieu nhap", "chi phi nhap")):
-            if not any("nhap" in t or "import" in t or "purchase" in t for t in table_names):
+        # 4. Import / Purchasing when no import table or import price column exists
+        asks_import = any(
+            term in q_norm
+            for term in ("nhap hang", "nhap kho", "tien nhap", "phieu nhap", "chi phi nhap", "gia nhap")
+        ) or bool(re.search(r"\bnhap\b.*\bbinh quan\b", q_norm))
+        if asks_import:
+            has_import_table = any("nhap" in t or "import" in t or "purchase" in t for t in table_names)
+            has_import_col = any(any(k in col for k in ("gia nhap", "sl nhap", "so luong nhap", "tien nhap")) for col in all_cols)
+            if not has_import_table and not has_import_col:
                 return "import_table_not_in_schema"
+            asks_import_money = any(
+                term in q_norm for term in ("tien nhap", "chi phi nhap", "gia nhap")
+            ) or bool(re.search(r"\bnhap\b.*\b(?:bao nhieu tien|binh quan|gia)\b", q_norm))
+            if asks_import_money:
+                has_import_price = False
+                for tname, df in tables.items():
+                    tn = normalize_text(tname)
+                    if any(w in tn for w in ("nhap", "import", "purchase")):
+                        for col in df.columns:
+                            cn = normalize_text(col)
+                            if any(p in cn for p in ("gia", "tien", "can tra", "chi phi", "tong", "amount", "price", "cost")):
+                                has_import_price = True
+                                break
+                if not has_import_price and not any("gia nhap" in col or "tien nhap" in col for col in all_cols):
+                    return "import_price_not_in_schema"
 
         # 5. Profit / Margin when no cost column exists
-        if any(term in q_norm for term in ("loi nhuan", "tien lai", "ty suat loi nhuan", "ti suat loi nhuan")):
-            if not any(any(k in col for k in ("gia von", "giavon", "cost", "von", "loi nhuan")) for col in all_cols):
+        if any(term in q_norm for term in ("loi nhuan", "tien lai", "lai gop", "lai rong", "ty suat loi nhuan", "ti suat loi nhuan")):
+            if not any(any(k in col for k in ("gia von", "giavon", "cost", "von", "loi nhuan", "lai gop")) for col in all_cols):
                 return "cost_data_not_in_schema"
+
+        # 6. Inventory / Stock when no stock, batch, or import table/column exists
+        if any(term in q_norm for term in ("trong kho", "ton kho", "ton cuoi", "hang ton")):
+            has_inv_table = any(bool(re.search(r"\b(?:ton|tonkho|ton_kho|kho|nhap|lo)\b", t)) or any(w in t for w in ("tonkho", "ton_kho", "baocaotonkho", "nhaphang", "nhap_hang")) for t in table_names)
+            has_inv_col = any(bool(re.search(r"\b(?:ton|kho|sl nhap|so luong nhap)\b", col)) for col in all_cols)
+            if not has_inv_table and not has_inv_col:
+                return "inventory_not_in_schema"
+
+        # 7. Customer Debt / Receivables when no debt table or column exists
+        if any(
+            term in q_norm
+            for term in ("con no", "khach no", "no nhieu nhat", "ghi no", "mua chiu", "thu no", "tra bot no", "da tra no", "con thieu", "cong no")
+        ):
+            has_debt_table = any(any(w in t for w in ("no", "congno", "cong_no", "phieuthu", "phieu_thu", "thanhtoan", "thanh_toan")) for t in table_names)
+            has_debt_col = any(
+                any(w in col for w in ("no", "con thieu", "phai thu", "mua chiu", "khach da tra", "da thu", "da thanh toan"))
+                for col in all_cols
+            )
+            if not has_debt_table and not has_debt_col:
+                return "customer_debt_not_in_schema"
+
+        # 8. Expiration date when no expiry column exists
+        if any(term in q_norm for term in ("han dung", "han su dung", "het han", "can date")):
+            if not any(any(w in col for w in ("han dung", "han su dung", "hsd", "het han", "exp")) for col in all_cols):
+                return "expiry_date_not_in_schema"
+
+        # 9. Sales channel when no channel column exists
+        if any(
+            term in q_norm
+            for term in ("ban qua dien thoai", "ban qua zalo", "ban tai quay", "kenh ban", "qua zalo oa", "don tai quay", "don qua dien thoai")
+        ):
+            if not any(any(w in col for w in ("kenh", "channel", "nguon", "hinh thuc ban", "ban qua", "loai ban")) for col in all_cols):
+                return "sales_channel_not_in_schema"
+
+        # 10. Requested period completely before the start of the shop's recorded data (Rulebook §7 line 100)
+        if question_info and getattr(question_info, "time_expressions", None) and len(question_info.time_expressions) == 1:
+            _, q_start, q_end = question_info.time_expressions[0]
+            if q_start and q_end and q_start.year >= 2020 and not question_info.is_comparison:
+                tx_min_dates = []
+                for tname, df in tables.items():
+                    tn = normalize_text(tname)
+                    if any(w in tn for w in ("danhmuc", "danh_muc", "sanpham", "san_pham", "khachhang", "khach_hang", "quydoi", "quy_doi", "banggia", "bang_gia")):
+                        continue
+                    for col in df.columns:
+                        if pd.api.types.is_datetime64_any_dtype(df[col]):
+                            cn = normalize_text(col)
+                            if not any(w in cn for w in ("ngay sinh", "nam sinh", "han dung", "han su dung", "het han", "tao mat hang")):
+                                s_clean = df[col].dropna()
+                                if not s_clean.empty:
+                                    d_min = s_clean.min().date()
+                                    if d_min.year >= 2020:
+                                        tx_min_dates.append(d_min)
+                if tx_min_dates and q_end < min(tx_min_dates):
+                    return "period_before_shop_data_start"
 
         return None
 

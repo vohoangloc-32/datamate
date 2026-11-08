@@ -283,6 +283,16 @@ def _create_safe_globals(tables: Dict[str, pd.DataFrame],
             and name not in _RESERVED_EXEC_NAMES
         ):
             safe_globals[name] = df_copy
+        if name.endswith("__monthly_combined") or name.endswith("__combined"):
+            base_prefix = name.rsplit("__", 1)[0]
+            base_var = re.sub(r"\W", "_", base_prefix, flags=re.UNICODE)
+            if (
+                base_var.isidentifier()
+                and not keyword.iskeyword(base_var)
+                and base_var not in _RESERVED_EXEC_NAMES
+                and base_var not in safe_globals
+            ):
+                safe_globals[base_var] = df_copy
 
     if len(tables) == 1:
         only_table = next(iter(tables))

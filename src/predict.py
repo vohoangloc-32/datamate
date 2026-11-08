@@ -37,7 +37,11 @@ from modules.analysis_plan import (
     execute_analysis_plan,
 )
 from modules.retry_engine import RetryEngine
-from modules.answer_formatter import format_answer, build_submission_line
+from modules.answer_formatter import (
+    format_answer,
+    build_submission_line,
+    resolve_entity_codes_in_answer,
+)
 from modules.confidence_gate import ConfidenceGate
 from modules.question_logger import QuestionLogger
 from modules.value_grounder import ValueGrounder
@@ -435,19 +439,25 @@ class DataMatePipeline:
                     expected_type=q_info.expected_type,
                     token_counter=self._prompt_token_counter,
                     max_prompt_tokens=self._max_prompt_tokens,
-                    question=question,
+                    question=clean_question,
                 )
 
             # 6. Confidence gate
+            formatted_ans = format_answer(
+                value=exec_result.result,
+                answer_type=exec_result.answer_type,
+                question=clean_question,
+            )
+            formatted_ans = resolve_entity_codes_in_answer(
+                answer=formatted_ans,
+                question=clean_question,
+                tables=tables,
+            )
             final_answer = self.confidence_gate.evaluate(
-                answer=format_answer(
-                    value=exec_result.result,
-                    answer_type=exec_result.answer_type,
-                    question=question,
-                ),
+                answer=formatted_ans,
                 question_info=q_info,
                 execution_retries=retries,
-                question=question,
+                question=clean_question,
                 code=exec_result.code or "",
                 tables=tables,
             )

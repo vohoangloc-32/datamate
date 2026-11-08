@@ -268,8 +268,10 @@ _NEEDS_ALL_STATUS_RE = re.compile(
     r"\b(huy|tra hang|tra lai|hoan|no|cong no|gia ban|dot giao|ti le|ty le)\b"
 )
 _RANK_CUSTOMER_RE = re.compile(
-    r"\b(khach hang|khach nao|ai mua|khach mua)\b.*\b(nhieu nhat|cao nhat|top|xep hang|nhieu don|nhieu tien|nhiu tien)\b"
-    r"|\b(top|nhieu nhat|cao nhat)\b.*\b(khach)\b"
+    r"\b(khach hang|khach nao|ai mua|ai la khach|khach mua)\b.*\b(nhieu nhat|cao nhat|top|xep hang|nhieu don|nhiu don|nhieu lan|nhiu lan|nhieu tien|nhiu tien)\b"
+    r"|\b(top|nhieu nhat|cao nhat|liet ke \d+|bang \d+)\b.*\b(khach)\b"
+    r"|\b(khach|khach hang)\b.*\bmua tu \d+ (?:don|lan|bill)\b"
+    r"|\b(?:bao nhieu|bnhiu|bn|may|so) khach\b.*\b(?:da mua|mua hang|mua tu)\b"
 )
 _AOV_RE = re.compile(
     r"\b(trung binh moi (?:don|bill|order)|binh quan moi (?:don|bill|order)|gia tri trung binh mot (?:don|bill|order)"
@@ -301,30 +303,40 @@ _WALKIN_VALUES: Set[str] = {
 }
 
 
+def _normalize_question(question: str) -> str:
+    """Normalize question slang/Telex typos and fold Vietnamese diacritics."""
+    try:
+        from .question_understanding import normalize_question_slang
+        question = normalize_question_slang(question)
+    except Exception:
+        pass
+    return normalize_text(question)
+
+
 def question_needs_all_statuses(question: str) -> bool:
     """True when the question asks about cancelled/returned orders, rates, debt, selling price, or delivery batches."""
-    return bool(_NEEDS_ALL_STATUS_RE.search(normalize_text(question)))
+    return bool(_NEEDS_ALL_STATUS_RE.search(_normalize_question(question)))
 
 
 def question_is_customer_ranking(question: str) -> bool:
-    """True when the question ranks or finds top individual customers."""
-    return bool(_RANK_CUSTOMER_RE.search(normalize_text(question)))
+    """True when the question ranks or finds top individual customers or counts repeat customers."""
+    return bool(_RANK_CUSTOMER_RE.search(_normalize_question(question)))
 
 
 def question_is_average_order_value(question: str) -> bool:
     """True when the question asks for average value/revenue per order (Rulebook §3 line 48)."""
-    return bool(_AOV_RE.search(normalize_text(question)))
+    return bool(_AOV_RE.search(_normalize_question(question)))
 
 
 def question_is_monetary_average(question: str) -> bool:
     """True when question asks for average/mean of monetary values (Rulebook §9 line 133)."""
-    q = normalize_text(question)
+    q = _normalize_question(question)
     return bool(_MONETARY_AVG_RE.search(q)) and not bool(re.search(r"\b(ti le|ty le|phan tram|%|so luong|so don|so ngay)\b", q))
 
 
 def question_is_pure_revenue(question: str) -> bool:
     """True when the question asks for revenue and not debt/paid amounts."""
-    q = normalize_text(question)
+    q = _normalize_question(question)
     return bool(_PURE_REVENUE_RE.search(q)) and not bool(_DEBT_OR_PAID_RE.search(q))
 
 
@@ -413,16 +425,36 @@ def prepare_tables_for_question(
         if filter_walkin:
             for col in data_cols:
                 c_comp = compact_identifier(col)
-                if any(
-                    t in c_comp for t in ("tenkhach", "khachhang", "benmua", "tenkh")
-                ) and not any(x in c_comp for x in ("nhom", "loai", "ma")):
+                if (
+                    any(t in c_comp for t in ("tenkhach", "khachhang", "benmua", "tenkh"))
+                    or c_comp in ("khach", "kh", "khachmua", "nguoimua")
+                ) and not any(x in c_comp for x in ("nhom", "loai", "ma", "so")):
                     s_col = work[col].dropna().astype(str)
                     vc_map = {
                         v: normalize_text(v) in _WALKIN_VALUES for v in s_col.unique()
                     }
-                    walkin_mask = work[col].map(vc_map).fillna(False)
+                    walkin_mask = work[col].map(vc_map).fillna(True).astype(bool)
                     if walkin_mask.any():
                         work = work.loc[~walkin_mask].copy()
+                elif c_comp in ("makh", "makhach", "makhachhang", "customerid"):
+                    id_walkin = (
+                        work[col].isna()
+                        | work[col].astype(str).str.strip().map(
+                            lambda v: not v or normalize_text(v) in _WALKIN_VALUES
+                        )
+                    ).astype(bool)
+                    if id_walkin.any() and not id_walkin.all():
+                        work = work.loc[~id_walkin].copy()
+
+        # Rulebook §6 VLXD: deduplicate (order_id, trip_col) directly when counting delivery trips
+        if question:
+            q_norm_prep = _normalize_question(question)
+            if any(k in q_norm_prep for k in ("dot giao", "luot giao", "xe da giao", "may dot", "bao nhieu dot", "so dot")) and not any(
+                u in q_norm_prep for u in ("kg", "tan", "m3", "vien", "bao ", "so luong")
+            ):
+                trip_col = next((c for c in work.columns if compact_identifier(c) in ("luotgiao", "langiao", "dotgiao")), None)
+                if trip_col and oid:
+                    work = work.drop_duplicates(subset=[oid, trip_col]).reset_index(drop=True)
 
         out[name] = work
 
@@ -561,7 +593,7 @@ def patch_code_and_tables_for_rulebook(
     if not question or not code:
         return code, tables
 
-    qtext = normalize_text(question)
+    qtext = _normalize_question(question)
     needs_all = question_needs_all_statuses(question)
     patched = code
     exec_tables = tables
@@ -611,12 +643,15 @@ def patch_code_and_tables_for_rulebook(
 
     # Multi-line order deduplication for order count & cancellation rate
     is_order_counting = any(
-        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "ti le", "ty le", "% don", "so don", "ti le huy", "tỷ lệ hủy")
+        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "may bill", "bao nhieu bill", "ti le", "ty le", "% don", "so don", "ti le huy", "tỷ lệ hủy")
     )
     if is_order_counting:
+        primary_oid = None
         for tname, df in exec_tables.items():
             oid = find_order_id_column(df)
             if oid is not None and df[oid].duplicated().any():
+                if primary_oid is None:
+                    primary_oid = oid
                 patched = re.sub(
                     rf"(\b{tname}\[[^\]]*\])\.shape\[0\]",
                     rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
@@ -643,6 +678,20 @@ def patch_code_and_tables_for_rulebook(
                     rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
                     patched,
                 )
+        # Also catch intermediate filtered DataFrame variables (e.g. result = len(df_q1) or df_q1.shape[0])
+        if primary_oid and ".nunique(" not in patched and ".drop_duplicates(" not in patched and not any(
+            w in qtext for w in ("mat hang", "san pham", "khach", "ngay", "dot")
+        ):
+            patched = re.sub(
+                r"result\s*=\s*len\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+                rf"result = (\1['{primary_oid}'].nunique() if isinstance(\1, pd.DataFrame) and '{primary_oid}' in \1.columns else len(\1))",
+                patched,
+            )
+            patched = re.sub(
+                r"result\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\[0\]",
+                rf"result = (\1['{primary_oid}'].nunique() if isinstance(\1, pd.DataFrame) and '{primary_oid}' in \1.columns else \1.shape[0])",
+                patched,
+            )
 
     # Average Order Value (AOV) on multi-line tables:
     if question_is_average_order_value(question):
@@ -726,6 +775,44 @@ def patch_code_and_tables_for_rulebook(
                         rf"((\1['{qty_col}'] * \1['{price_col}']).sum() / \1['{qty_col}'].sum())",
                         patched,
                     )
+
+    # Rulebook §3 lines 43–44 & §5 line 71: Redirect raw quantity ('Số lượng') to base-unit quantity ('Số lượng quy đổi')
+    # when ranking products, comparing price-change quantities, or summing base-unit quantities.
+    has_sl_quy_doi = any("Số lượng quy đổi" in df.columns for df in exec_tables.values())
+    if has_sl_quy_doi and "Số lượng quy đổi" not in patched and "Tỉ lệ quy đổi" not in patched and "Hệ số" not in patched:
+        large_units: Set[str] = set()
+        for tname, df in exec_tables.items():
+            for col in df.columns:
+                if compact_identifier(col) in ("donviquydoi", "dvnhap", "dvlon", "donvilon", "dvtquydoi"):
+                    for u in df[col].dropna().astype(str).unique():
+                        u_norm = normalize_text(u)
+                        if u_norm:
+                            large_units.add(u_norm)
+        asks_large_unit = any(
+            bool(re.search(rf"\b(?:bao nhieu|may|so|tinh theo)\s+{re.escape(lu)}\b", qtext))
+            for lu in large_units
+        )
+        asks_base_qty = any(
+            k in qtext
+            for k in (
+                "ban chay", "chay nhat", "ban nhieu nhat", "hot nhat",
+                "tang gia", "doi gia", "len gia",
+                "ban duoc", "ban ra",
+            )
+        ) and not question_is_pure_revenue(question) and not is_order_counting
+        if asks_base_qty and not asks_large_unit:
+            if exec_tables is tables:
+                exec_tables = {k: v.copy() for k, v in tables.items()}
+            for df in exec_tables.values():
+                if "Số lượng quy đổi" not in df.columns:
+                    for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL"):
+                        if raw_q in df.columns:
+                            df["Số lượng quy đổi"] = df[raw_q]
+                            break
+            for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong"):
+                patched = patched.replace(f"['{raw_q}']", "['Số lượng quy đổi']").replace(
+                    f'["{raw_q}"]', '["Số lượng quy đổi"]'
+                )
 
     if question_is_pure_revenue(question):
         # 1. First priority: if tables have 'Tiền hàng trước giảm' (pre-discount gross revenue)
