@@ -617,5 +617,47 @@ $$\mathbf{PA_{Run7} = \frac{151 - 33}{200} = \frac{118}{200} = +0.5900 \ (+59.00
 
 > **Ghi chú về phân tích mẫu số đánh giá:** Hàm `compute_pa` khi nhận toàn bộ 3.000 câu tham chiếu của `answers.jsonl` sẽ tính 2.800 câu chưa chạy là missing (`Correct: 151, Wrong: 33, Abstained: 2816 (2800 missing + 16 abstain), Total: 3000`). Khi tính trên đúng tập mẫu 200 câu được đưa vào dự đoán, điểm Penalized Accuracy chính thức đạt chính xác **+0.5900 (+59.00%)**, vượt xa cột mốc kỳ vọng của Phase 7.
 
+#### 4. Kiểm chứng Mở rộng Benchmark Run 8 trên Tập 500 Câu Phân tầng (`seed=42, SAMPLE_N=500`) — 2026-11-08
+
+Để kiểm chứng khả năng tổng quát hóa (zero-overfit) khi mở rộng quy mô từ 200 câu lên 500 câu phân tầng trên toàn bộ 30 hộ kinh doanh (`data/sample_questions_500.jsonl`), pipeline đã được kiểm thử trên Google Colab Pro:
+
+- **Khắc phục triệt để sự cố UTF-8 BOM & Mojibake (`9d0b2b5`, `d3a8a10`):**
+  - Ban đầu file `data/sample_questions_500.jsonl` được sinh qua lệnh PowerShell `Get-Content` thiếu tham số `-Encoding utf8`, khiến 354/500 câu hỏi tiếng Việt có dấu bị lỗi mã hóa CP1252 Mojibake (`thÃ¡ng nÃ y...`) và kèm ký tự UTF-8 BOM ở đầu file, dẫn đến kết quả nhiễu âm (`-20.40%`).
+  - Đã cập nhật `src/predict.py` và `src/evaluate.py` đọc file với `encoding="utf-8-sig"`, đồng thời tái tạo chuẩn `data/sample_questions_500.jsonl` bằng Python (`encoding="utf-8"`, lấy mẫu phân tầng `seed=42, SAMPLE_N=500`, khớp byte-for-byte với `data/train/questions.jsonl`).
+
+- **Kết quả chính thức Benchmark Run 8 (500 câu Stratified):**
+
+| Chỉ số | Kết quả Run 8 (500 câu, `seed=42`) | Tỷ lệ |
+|---|---:|---:|
+| **Tổng số câu đánh giá** | **500** | 100.0% |
+| **Số câu ĐÚNG (+1 pt)** | **333** | **66.6%** |
+| **Số câu SAI (-1 pt)** | **114** | 22.8% |
+| **Số câu ABSTAIN (0 pt)** | **53** | 10.6% |
+| 🔥 **PENALIZED ACCURACY (PA)** | **+0.4380 (+43.80%)** | — |
+
+$$\mathbf{PA_{Run8\_500} = \frac{333 - 114}{500} = \frac{219}{500} = +0.4380 \ (+43.80\%)}$$
+
+- **Phân rã kết quả theo kiểu dữ liệu tham chiếu (`gt_type`):**
+
+| Kiểu đáp án (`gt_type`) | Tổng số câu | Đúng (+1) | Sai (-1) | Abstain (0) | Điểm PA theo nhóm |
+|---|---:|---:|---:|---:|---:|
+| **`number`** | 314 | **228** | 58 | 28 | **+0.5414** |
+| **`percent`** | 96 | **62** | 20 | 14 | **+0.4375** |
+| **`date`** | 24 | **21** | 3 | 0 | **+0.7500** |
+| **`boolean`** | 4 | **2** | 1 | 1 | **+0.2500** |
+| **`string`** | 15 | **7** | 6 | 2 | **+0.0667** |
+| **`list`** | 32 | **12** | 16 | 4 | **-0.1250** |
+| **`unanswerable`** | 12 | **1** | 8 | 3 | **-0.5833** |
+| **`table`** | 3 | **0** | 2 | 1 | **-0.6667** |
+
+- **Tóm tắt 6 cụm lỗi hệ thống phát hiện từ phân tích pháp y 114 câu Sai (`results/submission (5).jsonl` & `results/error_analysis.csv`):**
+  1. **Cụm A — Đúng chính xác giá trị số nhưng lệch `type` (`pred_type='string'` vs `gt_type='number'`, hoặc `'number'` vs `'percent'`) — 14 câu (-28 điểm = -5.60% PA):** Do câu hỏi chứa lỗi chính tả tiếng Việt/teencode (`bao nhieeu`, `nhoms`, `bán đc mấy ly`, `là nhiêu`) làm `QuestionAnalyzer` hoặc code LLM gán `answer_type = 'string'` cho một con số thuần túy (`'108.0'`, `'3188000.00'`, `'72462'`, `'46'`).
+  2. **Cụm B — Lệch cấu trúc `list` vs `string`/`number` và phần tử chuỗi trong `list` — 16 câu:** Gồm các câu hỏi quy đổi hỗn hợp (`"mấy vỉ chẵn, mấy viên lẻ"`, `"mấy xe 4m3 chẵn, mấy m3 lẻ"`) trả về chuỗi thay vì `list` 2 số `[chẵn, lẻ]`; các câu hỏi đa giá trị (`"doanh thu tại quầy và qua zalo"`, `"mỗi bên bao nhiêu"`) trả về 1 số thay vì `list`; và phần tử số trong `list` bị bọc chuỗi `['312000', '254000']`.
+  3. **Cụm C — Bỏ lọt câu hỏi `unanswerable` khi thiếu bảng/cột nghiệp vụ — 8 câu:** Hỏi tồn kho tại cửa hàng không có bảng kho (`biz_103`), hỏi công nợ khách hàng tại cửa hàng không có sổ nợ (`biz_103`, `biz_105`, `biz_112`), hỏi hạn dùng ở cửa hàng VLXD (`biz_117`), hỏi giá nhập ở quán cafe không có bảng nhập (`biz_112`), hỏi kênh bán ở cửa hàng không có cột kênh bán (`biz_121`).
+  4. **Cụm D — Bỏ lọt lọc `Khách lẻ` khi xếp hạng khách hàng do biến thể từ ngữ/chính tả — 2+ câu:** Câu hỏi `"ai mua hàng nhiều tiền nhất"` (`biz_105`) và `"khách nào mua nhìu đơn nhất"` (`biz_117`) trả về `'Khách lẻ'` / `'khách lẻ'` thay vì khách định danh.
+  5. **Cụm E — Nhân đôi dữ liệu khi cộng gộp bảng tổng hợp và bảng tháng (`biz_122`):** Giá trị dự đoán gấp đúng 2 lần đáp án chuẩn (`4865021400` vs `2432510700`).
+  6. **Cụm F — Cửa sổ sự kiện đổi giá & quy đổi đơn vị (`biz_103`, `biz_109`, `biz_118`, `biz_121`, `biz_122`, `biz_130`):** Sai lệch cận ngày trong cửa sổ `"N ngày kể từ ngày tăng giá ... so với N ngày ngay trước đó"` và thiếu nhân/chia hệ số quy đổi đơn vị (`DanhSachQuyDoi`).
+
+
 
 
