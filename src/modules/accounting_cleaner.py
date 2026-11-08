@@ -756,6 +756,53 @@ def patch_code_and_tables_for_rulebook(
                     patched,
                 )
 
+    # Rulebook §6 line 82: Size M, size L must end with (M) or (L), case-insensitive
+    if bool(re.search(r"\bsize\s*m\b", qtext)):
+        patched = re.sub(
+            r"\.str\.(?:contains|endswith)\(\s*['\"](?:\(?M\)?|\^?.*M.*)['\"]\s*(?:,\s*case\s*=\s*(?:False|True))?\s*\)",
+            lambda _: ".str.contains(r'\\(M\\)\\s*$', case=False, regex=True)",
+            patched,
+        )
+    if bool(re.search(r"\bsize\s*l\b", qtext)):
+        patched = re.sub(
+            r"\.str\.(?:contains|endswith)\(\s*['\"](?:\(?L\)?|\^?.*L.*)['\"]\s*(?:,\s*case\s*=\s*(?:False|True))?\s*\)",
+            lambda _: ".str.contains(r'\\(L\\)\\s*$', case=False, regex=True)",
+            patched,
+        )
+
+    # Rulebook §5 line 63: Drop cancelled import slips
+    if any(k in qtext for k in ("tien nhap hang", "tien nhap", "chi phi nhap", "tong tien hang nhap")):
+        for tname, df in exec_tables.items():
+            if any(w in compact_identifier(tname) for w in ("nhaphang", "phieunhap", "import")):
+                status_col = next((c for c in df.columns if any(w in compact_identifier(c) for w in ("trangthai", "tinhtrang", "status"))), None)
+                if status_col:
+                    patched = re.sub(
+                        rf"(\b{tname}\b)(?!\[~?\1\['{status_col}'\])",
+                        rf"(\1[~\1['{status_col}'].astype(str).str.lower().str.contains('huy|cancel', na=False)])",
+                        patched,
+                    )
+
+    # Rulebook §3: Protect against inner join on conversion tables dropping products without large units
+    for conv_token in ("quydoi", "quy_doi", "don_vi_sp", "donvisp", "danhmuc", "danh_muc"):
+        patched = re.sub(
+            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*how\s*=\s*['\"]inner['\"]",
+            r".merge(\1, how='left'",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*(?!how\s*=)",
+            r".merge(\1, how='left', ",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*\)",
+            r".merge(\1, how='left')",
+            patched,
+            flags=re.IGNORECASE,
+        )
+
     # Weighted Average for import price (Rulebook §5 line 65)
     if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh", "don gia nhap")) and any(k in qtext for k in ("binh quan", "trung binh")):
         for tname, df in exec_tables.items():

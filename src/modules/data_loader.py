@@ -701,6 +701,8 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
         for name_b, df_b in table_items:
             if df_a is df_b or name_a == name_b or df_b.empty:
                 continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+                continue
             date_cols_b = [
                 c for c in df_b.columns
                 if _is_date_column(c) and pd.api.types.is_datetime64_any_dtype(df_b[c])
@@ -744,6 +746,8 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
 
         for name_b, df_b in table_items:
             if df_a is df_b or name_a == name_b or df_b.empty:
+                continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
                 continue
 
             join_pairs = []
@@ -790,6 +794,8 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
 
         for name_b, df_b in table_items:
             if df_a is df_b or name_a == name_b or df_b.empty:
+                continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
                 continue
 
             cust_id_cols_b = [
@@ -918,7 +924,11 @@ def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, p
                     "quydoi" in _compact_col_name(tname)
                     for tname in tables
                 )
-                if not has_conv_table:
+                has_sl_col = any(
+                    any(_compact_col_name(c) in ("soluongquydoi", "slquydoi", "slle", "soluongle") for c in df.columns)
+                    for df in tables.values()
+                )
+                if not has_conv_table and not has_sl_col:
                     matches = re.findall(
                         r"-\s+([^:\n]+):\s*1\s+([^=\n]+)\s*=\s*(\d+(?:[.,]\d+)?)\s*([^\n\r]+)",
                         content,

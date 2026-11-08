@@ -184,7 +184,7 @@ def format_list(value: Any) -> Optional[List]:
     # Format each element
     formatted = []
     for item in value:
-        if isinstance(item, (int, float)) and not isinstance(item, bool):
+        if isinstance(item, (int, float, np.integer, np.floating)) and not isinstance(item, bool):
             formatted.append(format_number(item))
         elif isinstance(item, str) and _is_pure_numeric_str(item):
             formatted.append(format_number(item.strip()))
@@ -354,13 +354,16 @@ def resolve_entity_codes_in_answer(
     tables: Optional[Dict[str, pd.DataFrame]],
 ) -> Dict[str, Any]:
     """
-    If a string or list answer returns SKU/Customer IDs (e.g. 'SP0053', ['SP0001', ...])
+    If a string, list, or table answer returns SKU/Customer IDs (e.g. 'SP0053', ['SP0001', ...])
     when the question asks for product/customer names (and not codes), map them to names.
+    Also strips redundant code column from 3-column [Code, Name, Metric] tables.
     """
-    if not answer or not question or not tables:
+    if not answer or not question:
         return answer
+    if tables is None:
+        tables = {}
     ans_type = answer.get("type")
-    if ans_type not in ("string", "list"):
+    if ans_type not in ("string", "list", "table"):
         return answer
     val = answer.get("answer")
     if not val:
@@ -372,13 +375,17 @@ def resolve_entity_codes_in_answer(
         if re.search(r"\bma\s+(?:hang|san pham|sp|sku|khach|kh|don|nhan vien|nv)\b", q_norm):
             return answer
 
-        code_pattern = re.compile(r"^(?:SP|HH|MH|TH|KH|MHH|MSP)\d+$", re.IGNORECASE)
-        items = [val] if ans_type == "string" else val
-        if not any(isinstance(x, str) and code_pattern.match(x.strip()) for x in items):
-            return answer
+        code_pattern = re.compile(r"^(?:SP|HH|MH|TH|KH|MHH|MSP|CUST)\d+$", re.IGNORECASE)
+        sku_tokens = (
+            "sku", "masku", "mahang", "masp", "masanpham", "mathuoc", "mahh",
+            "mahanghoa", "makh", "makhach", "makhachhang", "customerid", "idsp", "idkh",
+        )
+        name_tokens = (
+            "tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh", "tenhanghoa",
+            "tenmon", "tenkh", "tenkhach", "tenkhachhang", "khachhangten", "tengoi",
+            "product", "hang", "sanpham", "khachhang",
+        )
 
-        sku_tokens = ("sku", "masku", "mahang", "masp", "masanpham", "mathuoc", "mahh", "mahanghoa", "makh", "makhach", "makhachhang")
-        name_tokens = ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh", "tenhanghoa", "tenmon", "tenkh", "tenkhach", "tenkhachhang")
         code_to_name: Dict[str, str] = {}
         for df in tables.values():
             if df.empty:
@@ -394,7 +401,34 @@ def resolve_entity_codes_in_answer(
                         if k and v and k not in code_to_name:
                             code_to_name[k] = v
 
+        if ans_type == "table" and isinstance(val, dict):
+            cols = val.get("columns", [])
+            rows = val.get("rows", [])
+            if cols and rows:
+                c_comps = [compact_identifier(c) for c in cols]
+                # If 3 columns: [Code, Name, Metric] -> drop Code column
+                if len(cols) == 3:
+                    if (
+                        (c_comps[0] in sku_tokens or any(code_pattern.match(str(r[0]).strip()) for r in rows[:3] if r))
+                        and (c_comps[1] in name_tokens or not str(rows[0][1]).replace(".", "").isdigit())
+                    ):
+                        new_cols = [cols[1], cols[2]]
+                        new_rows = [[r[1], r[2]] for r in rows if len(r) >= 3]
+                        return {"type": "table", "answer": {"columns": new_cols, "rows": new_rows}}
+                # If 2 columns: [Code, Metric] -> resolve Code in rows to Name
+                elif len(cols) == 2 and code_to_name:
+                    if c_comps[0] in sku_tokens or any(code_pattern.match(str(r[0]).strip()) for r in rows[:3] if r):
+                        new_rows = [
+                            [code_to_name.get(str(r[0]).strip(), r[0]), r[1]]
+                            for r in rows if len(r) >= 2
+                        ]
+                        return {"type": "table", "answer": {"columns": cols, "rows": new_rows}}
+
         if not code_to_name:
+            return answer
+
+        items = [val] if ans_type == "string" else (val if ans_type == "list" else [])
+        if not any(isinstance(x, str) and (code_pattern.match(x.strip()) or x.strip() in code_to_name) for x in items):
             return answer
 
         if ans_type == "string" and isinstance(val, str):
