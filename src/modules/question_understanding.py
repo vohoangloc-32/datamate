@@ -68,7 +68,26 @@ _SLANG_REPLACEMENTS = [
     (re.compile(r"\bthangs\b", re.IGNORECASE), "tháng"),
     (re.compile(r"\b(?:tuafn|tuanf)\b", re.IGNORECASE), "tuần"),
     (re.compile(r"\bnafy\b", re.IGNORECASE), "này"),
-    (re.compile(r"\bngafy\b", re.IGNORECASE), "ngày"),
+    (re.compile(r"\b(?:ngafy|ngayf)\b", re.IGNORECASE), "ngày"),
+    (re.compile(r"\bddown\b", re.IGNORECASE), "đơn"),
+    (re.compile(r"\bvaf\b", re.IGNORECASE), "và"),
+    (re.compile(r"\bluwowtj\b", re.IGNORECASE), "lượt"),
+    (re.compile(r"\bnhaf\b", re.IGNORECASE), "nhà"),
+    (re.compile(r"\bnaof\b", re.IGNORECASE), "nào"),
+    (re.compile(r"\bnhaats\b", re.IGNORECASE), "nhất"),
+    (re.compile(r"\bnawm\b", re.IGNORECASE), "năm"),
+    (re.compile(r"\btrawm\b", re.IGNORECASE), "trăm"),
+    (re.compile(r"\bvaayj\b", re.IGNORECASE), "vậy"),
+    (re.compile(r"\bkhachs\b", re.IGNORECASE), "khách"),
+    (re.compile(r"\blaij\b", re.IGNORECASE), "lại"),
+    (re.compile(r"\btieenf\b", re.IGNORECASE), "tiền"),
+    (re.compile(r"\bgiumf\b", re.IGNORECASE), "giùm"),
+    (re.compile(r"\btrc\b", re.IGNORECASE), "trước"),
+    (re.compile(r"\bhok\b", re.IGNORECASE), "không"),
+    (re.compile(r"\bnhiu\b(?=\s+(?:tiền|tien|đơn|don|lần|lan|hàng|hang|nhất|nhat)\b)", re.IGNORECASE), "nhiều"),
+    (re.compile(r"\bnhiu\b", re.IGNORECASE), "nhiêu"),
+    (re.compile(r"\blà\s+chi\s*\??$", re.IGNORECASE), "là gì"),
+    (re.compile(r"\bla\s+chi\s*\??$", re.IGNORECASE), "là gì"),
     # Time slang
     (re.compile(r"\bhqua\b", re.IGNORECASE), "hôm qua"),
     (re.compile(r"\b(?:bua|bữa)\s+qua\b", re.IGNORECASE), "hôm qua"),
@@ -105,11 +124,12 @@ _TYPE_INDICATORS = {
         r"tổng\s+(?:số|tiền|doanh|chi|lượng|giá)",
         r"số lượng",
         r"(?:có|đã|được)\s+bao nhiêu",
-        r"\bmấy\s+(?!tháng\b|năm\b)(?:[a-zA-ZÀ-ỹ0-9]+\s+){0,2}(?:cái|chiếc|đơn|sản phẩm|mặt hàng|khách|đĩa|món|bill|hóa đơn|ly|cốc|tô|bát|nồi|phần|suất|chai|lon|lọ|hộp|vỉ|viên|gói|túi|bịch|thùng|két|lốc|bộ|cây|thanh|tấm|cuộn|bao|tạ|tấn|kg|g|gam|lít|ml|m|mét|m2|m3|xe|chuyến|đợt|lượt|lần|ngày|tuần|quý|ca|loại|nhóm|mã|lô)\b",
-        r"số\s+(?:đơn|bill|hóa đơn|chai|lon|lọ|hộp|vỉ|viên|gói|thùng|cây|kg|ly|đĩa|món|ngày|đợt|lượt|khách)",
+        r"\bmấy\s+(?!tháng\b|năm\b)(?:[a-zA-ZÀ-ỹ0-9]+\s+){0,2}(?:cái|chiếc|đơn|sản phẩm|mặt hàng|khách|đĩa|món|bill|hóa đơn|ly|cốc|tô|bát|nồi|phần|suất|chai|lon|lọ|hộp|vỉ|viên|gói|túi|bịch|thùng|két|lốc|bộ|cây|thanh|tấm|cuộn|bao|tạ|tấn|kg|g|gam|lít|ml|m|mét|m2|m3|xe|chuyến|đợt|lượt|lần|ngày|tuần|quý|ca|loại|nhóm|mã|lô|bình|ống|cục|tuýp|miếng|tờ|quyển|cuốn|cặp|đôi|hũ|khay)\b",
+        r"số\s+(?:đơn|bill|hóa đơn|chai|lon|lọ|hộp|vỉ|viên|gói|thùng|cây|kg|ly|đĩa|món|ngày|đợt|lượt|khách|bình|ống|cục|tuýp|miếng|phần)",
         r"\b(?:bán|ban)\s+(?:được|dc|duoc)\s+(?:bao\s+)?(?:nhiêu|nhiu)\s+tiền\b",
-        r"\b(?:là|được|bán|còn|hết|tốn|mang về)\s+(?:bao\s+)?(?:nhiêu|nhiu)\b(?!\s*%|\s*phần trăm)",
-        r"\b(?:nhiêu|nhiu)\s+(?:tiền|đơn|bill|cái|ly|chai|lon|kg|cây|gói|hộp|viên|lọ|ngày|đợt|khách)\b",
+        r"\b(?:là|được|bán|còn|hết|tốn|mang về|có)\s+(?:bao\s+)?(?:nhiêu|nhiu)\b(?!\s*%|\s*phần trăm)",
+        r"\b(?:nhiêu|nhiu)\s+(?:tiền|đơn|bill|cái|ly|chai|lon|kg|cây|gói|hộp|viên|lọ|ngày|đợt|khách|bình|ống|cục|tuýp|miếng|phần)\b",
+        r"\b(?:lãi gộp|lời gộp|lãi ròng|lợi nhuận|chi phí|doanh số|tổng tiền)\b",
         r"\bbill\b.*\bla\s+nhieu\b",
         r"đếm",
         r"count",
@@ -144,7 +164,8 @@ _TYPE_INDICATORS = {
     ],
     "boolean": [
         r"^(?:có|liệu)\s+.+\s+không\s*\??$",
-        r"\bcó\b.+\b(?:không|ko|khong)\s*\??$",
+        r"\bcó\b.+\b(?:không|ko|khong|hok|k)\b(?:\s+(?:vậy|ạ|nhỉ|hả|ta))?\s*\??$",
+        r"\bxu hướng\b.+\bcó phải\b",
         r"đúng\s+hay\s+sai",
         r"(?:có\s+)?đúng không",
         r"^.+\s+(?:có không|phải không|chưa)\s*\??$",
@@ -159,7 +180,7 @@ _TYPE_INDICATORS = {
         r"\blần lượt\b",
     ],
     "table": [
-        r"bảng",
+        r"\bbảng\s+(?:thống kê|tổng hợp|chi tiết|\d+)\b",
         r"(?:thống kê|tổng hợp|chi tiết)\s+(?:theo|từng)",
         r"(?:theo|từng)\s+(?:tháng|tuần|ngày|sản phẩm|loại|nhóm)",
         r"(?:so sánh|breakdown)",
@@ -226,13 +247,13 @@ _AGGREGATION_PATTERNS = {
 # ---------------------------------------------------------------------------
 
 _RANKING_DESC_KEYWORDS = [
-    r"bán chạy nhất", r"chạy nhất", r"lời nhất", r"lãi nhất", r"giỏi nhất",
-    r"nhiều nhất", r"nhiều\s+(?:đơn|lần|tiền|hàng|sản phẩm|mặt hàng|bill)\s+nhất",
+    r"bán chạy nhất", r"chạy nhất", r"lời nhất", r"lãi nhất", r"giỏi nhất", r"hot nhất",
+    r"nhiều nhất", r"nhiều\s+(?:[a-zA-ZÀ-ỹ]+\s+){1,2}nhất",
     r"cao nhất", r"lớn nhất", r"đắt nhất", r"top", r"doanh thu cao nhất",
 ]
 
 _RANKING_ASC_KEYWORDS = [
-    r"ít nhất", r"thấp nhất", r"nhỏ nhất", r"rẻ nhất", r"bán ít nhất",
+    r"ít nhất(?!\s+\d)", r"thấp nhất", r"nhỏ nhất", r"rẻ nhất", r"bán ít nhất",
 ]
 
 
@@ -317,7 +338,7 @@ class QuestionAnalyzer:
             re.match(r"^(?:cho\s+)?bang\s+(?:tong hop|chi tiet|thong ke|\d+)\b", normalized_question)
             or re.search(
                 r"\b(?:top\s+\d+|liet ke\s+\d+|\d+\s+(?:khach(?: hang)?|mat hang|san pham))\b"
-                r".*\b(?:kem\s+(?:so|doanh thu|tien)|va\s+so\s+(?:no|tien|luong|don)\s+cua\s+(?:tung|moi))\b",
+                r".*\b(?:kem\s+(?:so|doanh thu|tien)|va\s+so\s+(?:no|tien|luong|don)\s+cua\s+(?:tung|moi)|moi\s+(?:nguoi|khach|sp|mat hang)\s+(?:con\s+)?(?:no\s+)?(?:bao nhieu|nhieu|bnhiu|bn))\b",
                 normalized_question,
             )
         ):
@@ -331,6 +352,10 @@ class QuestionAnalyzer:
             re.search(r"\blan luot\b", normalized_question)
             or len(re.findall(r"\b(?:bao nhieu|bao nhiu|bnhiu|bn)\b", normalized_question)) >= 2
             or re.search(r"\b\d+\s+thang\b.*\bmoi thang\b", normalized_question)
+            or re.search(r"\bmoi\s+(?:thang|loai|nhom|kenh|ben)\s+(?:la\s+)?(?:bao nhieu|nhieu|bnhiu|bn)\b", normalized_question)
+            or re.search(r"\b(?:ghi|tra loi)\s+(?:\d+|hai|ba|bon)\s+so\b", normalized_question)
+            or re.search(r"\b0\s*[-–]\s*7\b.*\b8\s*[-–]\s*15\b", normalized_question)
+            or re.search(r"\b(?:hang|san pham|mat hang)\s+nao\s+het han\s+trong\s+\d+\s+ngay\b", normalized_question)
             or re.search(r"\b\d+\s+thang\b.*\btheo thu tu thoi gian\b", normalized_question)
             or re.search(r"\bliet ke\s+(?:doanh thu|so don|so luong|tien)\s+\d+\b", normalized_question)
             or re.search(r"\bmoi ben\s+(?:bao nhieu|la bao nhieu|nhieu)\b", normalized_question)
@@ -365,11 +390,11 @@ class QuestionAnalyzer:
             return ("list", 0.9)
 
         percent_shorthand = re.search(
-            r"\b(?:bn|bnhiu|bao nhieu|bao nhiu)\s*%",
+            r"\b(?:bn|bnhiu|bao nhieu|bao nhiu|nhieu|may)\s*%",
             normalized_question,
         )
         changed_percentage = re.search(
-            r"\b(?:tang|giam|thay doi)\b.*\b(?:bao nhieu|nhieu|nhiu|bnhiu|bn)\s*%",
+            r"\b(?:tang|giam|thay doi|hon|kem)\b.*\b(?:bao nhieu|nhieu|nhiu|bnhiu|bn|may)\s*(?:%|phan tram)",
             normalized_question,
         )
         if (
@@ -383,7 +408,11 @@ class QuestionAnalyzer:
         if (
             re.search(r"\b(?:doanh thu|dthu|revenue)\b", normalized_question)
             and not re.search(
-                r"\b(?:ai|nao|nhat|nhieu nhat|cao nhat|lon nhat|it nhat|thap nhat)\b",
+                r"\b(?:ai|nao|nhieu nhat|cao nhat|lon nhat|it nhat|thap nhat|tot nhat|chay nhat)\b",
+                normalized_question,
+            )
+            and not re.search(
+                r"\bco\b.*\b(?:khong|ko|hok|k|chua|phai khong)\b(?:\s+(?:vay|a|nhi|ha|ta))?\s*\??$|\bxu huong\b.*\bco phai\b",
                 normalized_question,
             )
         ):
@@ -436,7 +465,7 @@ class QuestionAnalyzer:
         if info.ranking_direction:
             # Extract k (top-k)
             m = re.search(
-                r"(?<![/\d])\b(?:top\s+)?(\d+)\s+(?:san pham|mat hang|khach(?: hang)?|don|bill|mon|dia)\b",
+                r"(?<![/\d])\b(?:top\s+)?(\d+)\s+(?:san pham|mat hang|khach(?: hang)?|mon|dia)\b",
                 normalized_question,
             )
             if not m:
