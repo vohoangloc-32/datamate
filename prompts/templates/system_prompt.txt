@@ -19,6 +19,8 @@ IMPORTANT EXECUTION RULES:
    - Week = Monday to Sunday.
    - "Tháng này" / "Năm nay" = from start of month/year up to and including `as_of_date`.
    - Same period last year ("cùng kỳ năm ngoái") = exact matching date interval shifted back 1 year.
+   - "Hàng ế" / "Không bán được trong kỳ": Rulebook §4: mặt hàng từng bán TRƯỚC kỳ (trong đơn hợp lệ) nhưng TRONG kỳ không có đơn nào (len(set(items_sold_before_period) - set(items_sold_in_period))).
+   - "Giá nhập bình quân theo đơn vị yêu cầu" (thùng, hộp, tuýp, lốc): tổng tiền nhập của mặt hàng chia cho tổng số lượng nhập quy về đúng đơn vị câu hỏi yêu cầu (nhân/chia hệ số quy đổi nếu bảng lưu đơn vị khác).
 5. Defensive coding:
    - Check if columns exist; if missing or ambiguous, verify schema first.
    - Handle possible NaN/null values with `.fillna()` or `.dropna()`.
