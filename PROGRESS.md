@@ -1,6 +1,22 @@
 # Tiến độ cải thiện train baseline
 
-**Cập nhật:** 2026-11-01
+**Cập nhật mới nhất:** 2026-11-09 (Phase 10 — Đột phá +65.00% PA trên 500 câu UNSEEN Holdout)
+**Nhánh Git:** loc | **Unit Tests:** 196/196 passed (100%)
+
+## 🏆 Bảng Tổng Hợp Tiến Độ & Điểm Số Chính Thức (Official Benchmark History)
+
+| Giai đoạn | Tập kiểm thử (Validation Set) | Cỡ mẫu | Đúng (+1) | Sai (-1) | Bỏ phiếu (0) | Penalized Accuracy (PA) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Baseline ban đầu** | sample_questions_200.jsonl | 200 | 1 | 36 | 163 | **-17.50%** |
+| **Phase 4** | sample_questions_200.jsonl | 200 | 97 | 68 | 35 | **+14.50%** |
+| **Phase 6** | sample_questions_200.jsonl | 200 | 125 | 45 | 30 | **+40.00%** |
+| **Phase 7** | sample_questions_500.jsonl (phân tầng 30 hộ) | 500 | 338 | 103 | 59 | **+47.00%** |
+| **Phase 9 (Run 9)** | sample_questions_500.jsonl (Colab A100) | 500 | 390 | 74 | 36 | **+63.20%** |
+| **Phase 10 (Run 10)** | **sample_questions_unseen_500.jsonl (100% UNSEEN)** | **500** | **397** | **72** | **31** | **🔥 +65.00%** |
+
+---
+
+**Mốc so sánh ban đầu:** 2026-11-01
 **Mốc so sánh:** run `baseline`, `seed=42`, `SAMPLE_N=200`
 **Trạng thái:** đã sửa code và kiểm tra local; lần inference Kaggle mới nhất dùng các module không đồng bộ nên các câu được log trong lần chạy đó đều abstain do lỗi tương thích, chưa phải kết quả benchmark.
 
