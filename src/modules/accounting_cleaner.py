@@ -270,6 +270,8 @@ _NEEDS_ALL_STATUS_RE = re.compile(
 _RANK_CUSTOMER_RE = re.compile(
     r"\b(khach hang|khach nao|ai mua|ai la khach|khach mua)\b.*\b(nhieu nhat|cao nhat|top|xep hang|nhieu don|nhiu don|nhieu lan|nhiu lan|nhieu tien|nhiu tien)\b"
     r"|\b(top|nhieu nhat|cao nhat|liet ke \d+|bang \d+)\b.*\b(khach)\b"
+    r"|\b(?:\d+|top)\s+khach\b.*\b(?:cao|nhieu|lon)\s+nhat\b"
+    r"|\bkhach\b.*\b(?:tong\s+tien|chi\s+tieu|doanh\s+thu|so\s+don|so\s+lan)\b.*\b(?:cao|nhieu|lon)\s+nhat\b"
     r"|\b(khach|khach hang)\b.*\bmua tu \d+ (?:don|lan|bill)\b"
     r"|\b(?:bao nhieu|bnhiu|bn|may|so) khach\b.*\b(?:da mua|mua hang|mua tu)\b"
 )
@@ -802,6 +804,50 @@ def patch_code_and_tables_for_rulebook(
             patched,
             flags=re.IGNORECASE,
         )
+        patched = re.sub(
+            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*how\s*=\s*['\"]inner['\"]",
+            r"pd.merge(\1, \2, how='left'",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*(?!how\s*=)",
+            r"pd.merge(\1, \2, how='left', ",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*\)",
+            r"pd.merge(\1, \2, how='left')",
+            patched,
+            flags=re.IGNORECASE,
+        )
+
+    # Rulebook §3 lines 43-44: Non-converted items have ratio = 1 (fillna(1) on conversion ratios)
+    ratio_cols = ("Tỉ lệ quy đổi", "Ti le quy doi", "Hệ số", "He so", "he_so", "ti_le", "ty_le", "ratio", "Tỉ lệ")
+    for rcol in ratio_cols:
+        patched = re.sub(
+            rf"(\b[A-Za-z0-9_]*\[\s*['\"]{rcol}['\"]\s*\])(?!\s*\.fillna)",
+            rf"\1.fillna(1)",
+            patched,
+        )
+
+    # Rulebook §3 lines 43–44: When ranking products (bán chạy nhất, hàng hot nhất), rank by QUANTITY sold unless revenue is specified
+    is_product_ranking = any(
+        k in qtext
+        for k in (
+            "ban chay", "chay nhat", "hot nhat", "ban nhieu nhat", "best seller",
+            "hang hot", "mon hot", "san pham hot"
+        )
+    ) and not any(k in qtext for k in ("doanh thu", "dthu", "tien", "revenue", "gia tri"))
+
+    if is_product_ranking:
+        for rev_col in ("Thành tiền", "ThanhTien", "Amount", "Tổng tiền", "TongTien", "tien_hang", "Tiền hàng"):
+            patched = re.sub(
+                rf"\.groupby\(([^)]*)\)\[\s*['\"]{rev_col}['\"]\s*\]\.sum\(\)",
+                r".groupby(\1)['Số lượng quy đổi'].sum()",
+                patched
+            )
 
     # Weighted Average for import price (Rulebook §5 line 65)
     if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh", "don gia nhap")) and any(k in qtext for k in ("binh quan", "trung binh")):

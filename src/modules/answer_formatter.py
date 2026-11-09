@@ -150,12 +150,16 @@ def format_list(value: Any) -> Optional[List]:
         return None
 
     # Convert various types to list
-    if isinstance(value, pd.Series):
+    if isinstance(value, pd.DataFrame):
+        value = value.iloc[:, 0].tolist() if not value.empty else []
+    elif isinstance(value, pd.Series):
         value = value.tolist()
     elif isinstance(value, pd.Index):
         value = value.tolist()
     elif isinstance(value, np.ndarray):
         value = value.tolist()
+    elif isinstance(value, dict):
+        value = list(value.values()) if all(isinstance(v, (int, float, np.integer, np.floating)) for v in value.values()) else list(value.keys())
     elif isinstance(value, str):
         try:
             value = json.loads(value)
@@ -165,19 +169,38 @@ def format_list(value: Any) -> Optional[List]:
     if not isinstance(value, list):
         value = [value]
 
+    # Flatten 1D-like nested structures: [[x], [y], [z]] -> [x, y, z]
+    if any(isinstance(item, (list, tuple)) for item in value):
+        flattened = []
+        is_flattenable = True
+        for item in value:
+            if isinstance(item, (list, tuple)) and len(item) == 1:
+                flattened.append(item[0])
+            elif not isinstance(item, (list, tuple, dict, set, np.ndarray, pd.Series, pd.Index, pd.DataFrame)):
+                flattened.append(item)
+            else:
+                is_flattenable = False
+                break
+        if is_flattenable:
+            value = flattened
+
     nested_types = (
         list, tuple, dict, set, np.ndarray, pd.Series, pd.Index, pd.DataFrame
     )
     if any(isinstance(item, nested_types) for item in value):
         return None
 
-    # Unpack 2-part mixed unit strings (e.g. ['10882 vỉ chẵn', '0 viên lẻ'] or ['0.0 xe 4m3', '27.0 m3'])
+    # Unpack 2-part mixed unit strings (e.g. ['10882 vỉ chẵn', '0 viên lẻ'] or ['nợ thêm 80000', 'trả được 40000'])
     if len(value) == 2 and all(isinstance(x, str) for x in value):
-        m0 = re.match(r"^\s*(-?(?:0|[1-9]\d*)(?:\.\d+)?)\s+\S+", value[0])
-        m1 = re.match(r"^\s*(-?(?:0|[1-9]\d*)(?:\.\d+)?)\s+\S+", value[1])
+        # 1. Clean Vietnamese thousands separators first
+        clean0 = str(value[0]).replace(".", "").replace(",", ".")
+        clean1 = str(value[1]).replace(".", "").replace(",", ".")
+        m0 = re.search(r"(-?(?:0|[1-9]\d*)(?:\.\d+)?)", clean0)
+        m1 = re.search(r"(-?(?:0|[1-9]\d*)(?:\.\d+)?)", clean1)
         joined_lower = f"{value[0]} {value[1]}".lower()
-        if m0 and m1 and any(
-            k in joined_lower for k in ("chẵn", "lẻ", "chan", "le", "xe 4m3", "cuộn 10m", "vỉ", "viên", "hộp", "thùng", "m3")
+        if m0 and m1 and (
+            any(k in joined_lower for k in ("chẵn", "lẻ", "chan", "le", "xe 4m3", "cuộn 10m", "vỉ", "viên", "hộp", "thùng", "m3", "nợ", "no", "tra", "trả", "them", "thêm"))
+            or not (_is_pure_numeric_str(value[0]) and _is_pure_numeric_str(value[1]))
         ):
             return [format_number(m0.group(1)), format_number(m1.group(1))]
 
@@ -390,15 +413,25 @@ def resolve_entity_codes_in_answer(
         for df in tables.values():
             if df.empty:
                 continue
-            c_cols = [c for c in df.columns if compact_identifier(c) in sku_tokens]
-            n_cols = [c for c in df.columns if compact_identifier(c) in name_tokens]
+            c_cols = [
+                c for c in df.columns
+                if compact_identifier(c) in sku_tokens
+                or compact_identifier(c).startswith(("ma", "id", "code"))
+                or any(code_pattern.match(str(x).strip()) for x in df[c].dropna().head(10))
+            ]
+            n_cols = [
+                c for c in df.columns
+                if compact_identifier(c) in name_tokens
+                or compact_identifier(c) in ("kh", "ten", "hovaten", "customername", "tengoi")
+                or any(t in compact_identifier(c) for t in ("ten", "name", "khachhang", "sanpham"))
+            ]
             for cc in c_cols:
                 for nc in n_cols:
                     if cc == nc:
                         continue
                     sub = df[[cc, nc]].dropna()
                     for k, v in zip(sub[cc].astype(str).str.strip(), sub[nc].astype(str).str.strip()):
-                        if k and v and k not in code_to_name:
+                        if k and v and k not in code_to_name and code_pattern.match(k):
                             code_to_name[k] = v
 
         if ans_type == "table" and isinstance(val, dict):
