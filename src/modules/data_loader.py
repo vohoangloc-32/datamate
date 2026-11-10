@@ -150,8 +150,8 @@ def _is_order_id_column(name: str) -> bool:
             "madon", "mahd", "sohd", "mahoadon", "sohoadon",
             "orderid", "orderno", "ordernumber", "machungtu",
             "sochungtu", "soct", "madh", "sodon", "mabill",
-            "sophieu", "maphieu", "magd", "manhaphang",
-            "manhap", "madonnhap", "phieunhap", "donnhap",
+            "sophieu", "maphieu", "magd", "magiaodich", "manhaphang",
+            "manhap", "madonnhap", "phieunhap", "donnhap", "madonhang",
         )
     )
 
@@ -318,7 +318,7 @@ def _coerce_types(df: pd.DataFrame, default_year: Optional[int] = None) -> pd.Da
 
             # 1. Try direct numeric
             numeric = pd.to_numeric(df[col], errors="coerce")
-            if numeric.notna().sum() > 0.6 * len(non_null):
+            if numeric.notna().sum() > 0.9 * len(non_null):
                 df[col] = numeric
                 continue
 
@@ -346,10 +346,10 @@ def _coerce_types(df: pd.DataFrame, default_year: Optional[int] = None) -> pd.Da
                     df[col] = pd.to_numeric(full_parsed, errors="coerce")
                     continue
 
-            # 2c. Try Quantity with unit string parsing (e.g. '1 chai', '2 ly', '10 hop')
+            # 2c. Try Quantity with unit string parsing (e.g. '1 chai', '2 ly', '10 hop', '1 hộp 30', '2 bao 25kg')
             compact_c = _compact_col_name(col)
             if any(t in compact_c for t in ("soluong", "sl", "qty", "quantity")) and not any(t in compact_c for t in ("ma", "id", "ten")):
-                _qty_re = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s+[a-zA-ZÀ-ỹ]+\s*$")
+                _qty_re = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s+[a-zA-Z0-9À-ỹ\s/.-]+$")
                 sample_qty = non_null.head(30).astype(str)
                 if any(_qty_re.match(v) for v in sample_qty):
                     def _extract_qty(val: object) -> object:
@@ -727,7 +727,7 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
     # Pass 3: Product Dimension propagation (Catalog -> Detail/Secondary)
     sku_tokens = ("sku", "mahang", "masp", "mathuoc", "mahh")
     name_tokens = ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh")
-    hoat_chat_tokens = ("hoatchat", "activeingredient", "hoatchatchinh")
+    hoat_chat_tokens = ("hoatchat", "activeingredient", "hoatchatchinh", "thanhphanchinh")
     ke_don_tokens = ("kedon", "thuocketheodon", "thuockedon", "bantheodon", "prescription", "theodon")
     nhom_hang_tokens = ("nhomhang", "danhmuc", "category", "nhomsanpham", "maloaihang", "tenloaihang", "loaihang")
     dvt_tokens = ("donvitinh", "dvt", "unit")
@@ -821,15 +821,15 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
                                 df_b[cdim] = df_b[cidb].map(mapping)
 
     # Pass 5: Pre-compute 'Số lượng quy đổi' (base-unit quantity) from unit conversion tables (Rulebook §3 & §6)
-    ratio_tokens = ("tilequydoi", "heso", "hesoqd", "tylequydoi")
-    large_unit_tokens = ("donviquydoi", "dvnhap", "dvlon", "donvilon", "dvtquydoi")
-    prod_key_tokens = ("tensanpham", "tenhang", "tenmon", "hang", "tenhh", "tenhanghoa", "masp", "mahang", "masku", "sku")
+    ratio_tokens = ("tilequydoi", "heso", "hesoqd", "hesoquydoi", "tylequydoi")
+    large_unit_tokens = ("donviquydoi", "dvnhap", "dvlon", "donvilon", "dvtquydoi", "donvitinh", "dvt", "donvi")
+    prod_key_tokens = ("tensanpham", "tenhang", "tenmon", "hang", "tenhh", "tenhanghoa", "masp", "mahang", "masku", "sku", "mahanghoa")
     conv_map: Dict[Tuple[str, str], float] = {}
     for name_a, df_a in table_items:
         if df_a.empty:
             continue
         r_col = next((c for c in df_a.columns if _compact_col_name(c) in ratio_tokens), None)
-        u_col = next((c for c in df_a.columns if _compact_col_name(c) in large_unit_tokens), None)
+        u_col = next((c for c in df_a.columns if _compact_col_name(c) in large_unit_tokens and c != r_col), None)
         p_cols = [c for c in df_a.columns if _compact_col_name(c) in prod_key_tokens]
         if r_col and u_col and p_cols:
             for p_col in p_cols:
@@ -842,18 +842,37 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
                     except (ValueError, TypeError):
                         pass
 
-    if conv_map:
-        qty_col_candidates = ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL")
-        unit_col_candidates = ("ĐVT", "Đơn vị tính", "Đơn vị", "Unit", "dvt", "don_vi_tinh")
-        for name_b, df_b in table_items:
-            if df_b.empty or "Số lượng quy đổi" in df_b.columns or "SL quy đổi" in df_b.columns:
-                continue
-            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
-                continue
-            q_col = next((c for c in qty_col_candidates if c in df_b.columns), None)
-            u_col = next((c for c in unit_col_candidates if c in df_b.columns), None)
-            p_cols_b = [c for c in df_b.columns if _compact_col_name(c) in prod_key_tokens]
-            if q_col and u_col and p_cols_b:
+    # Alias existing base-unit quantity columns into 'Số lượng quy đổi'
+    base_qty_aliases = (
+        "SLQuyDoi", "SL quy đổi", "Số lượng lẻ", "SL lẻ",
+        "Quy ra ĐV lẻ", "Số lượng (ĐVT cơ bản)", "SL quy ra lẻ",
+        "SL cơ bản", "sl_co_ban", "SL co ban",
+    )
+    for name_b, df_b in table_items:
+        if df_b.empty:
+            continue
+        if "Số lượng quy đổi" not in df_b.columns:
+            for b_alias in base_qty_aliases:
+                if b_alias in df_b.columns:
+                    df_b["Số lượng quy đổi"] = pd.to_numeric(df_b[b_alias], errors="coerce").fillna(0)
+                    break
+
+    qty_col_candidates = (
+        "Số lượng", "Số lượng sản phẩm", "so_luong", "SL",
+        "Số lượng hàng", "soluonghang", "SoLuong", "so_luong_hang",
+    )
+    unit_col_candidates = ("ĐVT", "Đơn vị tính", "Đơn vị", "Unit", "dvt", "don_vi_tinh", "DonVi", "donvi")
+    for name_b, df_b in table_items:
+        if df_b.empty or "Số lượng quy đổi" in df_b.columns:
+            continue
+        if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+            continue
+        q_col = next((c for c in qty_col_candidates if c in df_b.columns), None)
+        u_col = next((c for c in unit_col_candidates if c in df_b.columns), None)
+        p_cols_b = [c for c in df_b.columns if _compact_col_name(c) in prod_key_tokens]
+        if q_col:
+            q_num = pd.to_numeric(df_b[q_col], errors="coerce")
+            if conv_map and u_col and p_cols_b:
                 p_col_b = p_cols_b[0]
                 p_norm = df_b[p_col_b].fillna("").astype(str).map(normalize_text)
                 u_norm = df_b[u_col].fillna("").astype(str).map(normalize_text)
@@ -861,8 +880,9 @@ def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.D
                     conv_map.get((p, u), 1.0)
                     for p, u in zip(p_norm, u_norm)
                 ]
-                q_num = pd.to_numeric(df_b[q_col], errors="coerce")
                 df_b["Số lượng quy đổi"] = q_num * pd.Series(factors, index=df_b.index)
+            else:
+                df_b["Số lượng quy đổi"] = q_num
 
     return tables
 

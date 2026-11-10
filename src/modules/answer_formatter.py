@@ -150,7 +150,9 @@ def format_list(value: Any) -> Optional[List]:
         return None
 
     # Convert various types to list
-    if isinstance(value, pd.DataFrame):
+    if isinstance(value, (tuple, set)):
+        value = list(value)
+    elif isinstance(value, pd.DataFrame):
         value = value.iloc[:, 0].tolist() if not value.empty else []
     elif isinstance(value, pd.Series):
         value = value.tolist()

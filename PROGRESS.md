@@ -13,6 +13,8 @@
 | **Phase 7** | sample_questions_500.jsonl (phân tầng 30 hộ) | 500 | 338 | 103 | 59 | **+47.00%** |
 | **Phase 9 (Run 9)** | sample_questions_500.jsonl (Colab A100) | 500 | 390 | 74 | 36 | **+63.20%** |
 | **Phase 10 (Run 10)** | **sample_questions_unseen_500.jsonl (100% UNSEEN)** | **500** | **397** | **72** | **31** | **🔥 +65.00%** |
+| **Phase 10 (Run 11)** | sample_questions_unseen_500.jsonl (Dual RTX 5090) | 500 | 396 | 73 | 31 | **+64.60%** |
+| **Phase 11 (Upcoming)** | sample_questions_unseen_500.jsonl (Phase 11 Fixes) | 500 | *440-445* | *25-30* | *25-30* | **🎯 Dự kiến > +80.00%** |
 
 ---
 

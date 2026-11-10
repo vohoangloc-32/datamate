@@ -142,6 +142,8 @@ _ORDER_ID_TOKENS: Tuple[str, ...] = (
     "sophieu",
     "maphieu",
     "magd",
+    "magiaodich",
+    "madonhang",
 )
 
 # Strictly accented Vietnamese NFC subtotal/footer patterns so customer
@@ -265,7 +267,8 @@ def dedup_order_table_rows(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 _NEEDS_ALL_STATUS_RE = re.compile(
-    r"\b(huy|tra hang|tra lai|hoan|no|cong no|gia ban|dot giao|ti le|ty le)\b"
+    r"\b(huy|tra hang|tra lai|hoan|no|cong no|gia ban|dot giao|dot hang|luot giao|chuyen giao|ti le|ty le)\b"
+    r"|\b(?:xe\s+(?:da\s+)?giao|xe\s+cho|giao\s+(?:\w+\s+){0,3}dot)\b"
 )
 _RANK_CUSTOMER_RE = re.compile(
     r"\b(khach hang|khach nao|ai mua|ai la khach|khach mua)\b.*\b(nhieu nhat|cao nhat|top|xep hang|nhieu don|nhiu don|nhieu lan|nhiu lan|nhieu tien|nhiu tien)\b"
@@ -451,9 +454,9 @@ def prepare_tables_for_question(
         # Rulebook §6 VLXD: deduplicate (order_id, trip_col) directly when counting delivery trips
         if question:
             q_norm_prep = _normalize_question(question)
-            if any(k in q_norm_prep for k in ("dot giao", "luot giao", "xe da giao", "may dot", "bao nhieu dot", "so dot")) and not any(
-                u in q_norm_prep for u in ("kg", "tan", "m3", "vien", "bao ", "so luong")
-            ):
+            if any(k in q_norm_prep for k in ("dot giao", "luot giao", "xe da giao", "may dot", "bao nhieu dot", "so dot", "chuyen giao")) and not any(
+                bool(re.search(rf"\b{u}\b", q_norm_prep)) for u in ("kg", "tan", "m3", "vien", "so luong")
+            ) and not bool(re.search(r"\bbao\s+(?:xi|cat|da|gao)\b", q_norm_prep)):
                 trip_col = next((c for c in work.columns if compact_identifier(c) in ("luotgiao", "langiao", "dotgiao")), None)
                 if trip_col and oid:
                     work = work.drop_duplicates(subset=[oid, trip_col]).reset_index(drop=True)
@@ -832,6 +835,9 @@ def patch_code_and_tables_for_rulebook(
             patched,
         )
 
+    # Rulebook §3 lines 43–44 & §5 line 71: Ensure base-unit quantity ('Số lượng quy đổi') is ready
+    has_sl_quy_doi = any("Số lượng quy đổi" in df.columns for df in exec_tables.values())
+
     # Rulebook §3 lines 43–44: When ranking products (bán chạy nhất, hàng hot nhất), rank by QUANTITY sold unless revenue is specified
     is_product_ranking = any(
         k in qtext
@@ -841,12 +847,26 @@ def patch_code_and_tables_for_rulebook(
         )
     ) and not any(k in qtext for k in ("doanh thu", "dthu", "tien", "revenue", "gia tri"))
 
+    if has_sl_quy_doi or is_product_ranking:
+        if exec_tables is tables:
+            exec_tables = {k: v.copy() for k, v in tables.items()}
+        for df in exec_tables.values():
+            if "Số lượng quy đổi" not in df.columns:
+                for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL", "Số lượng hàng", "soluonghang", "SoLuong", "SL lẻ", "Số lượng lẻ", "Quy ra ĐV lẻ", "Số lượng (ĐVT cơ bản)"):
+                    if raw_q in df.columns:
+                        df["Số lượng quy đổi"] = pd.to_numeric(df[raw_q], errors="coerce").fillna(0)
+                        break
+
     if is_product_ranking:
         for rev_col in ("Thành tiền", "ThanhTien", "Amount", "Tổng tiền", "TongTien", "tien_hang", "Tiền hàng"):
             patched = re.sub(
                 rf"\.groupby\(([^)]*)\)\[\s*['\"]{rev_col}['\"]\s*\]\.sum\(\)",
                 r".groupby(\1)['Số lượng quy đổi'].sum()",
                 patched
+            )
+        for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL", "Số lượng hàng", "SoLuong"):
+            patched = patched.replace(f"['{raw_q}']", "['Số lượng quy đổi']").replace(
+                f'["{raw_q}"]', '["Số lượng quy đổi"]'
             )
 
     # Weighted Average for import price (Rulebook §5 line 65)
@@ -872,7 +892,7 @@ def patch_code_and_tables_for_rulebook(
     # Rulebook §3 lines 43–44 & §5 line 71: Redirect raw quantity ('Số lượng') to base-unit quantity ('Số lượng quy đổi')
     # when ranking products, comparing price-change quantities, or summing base-unit quantities.
     has_sl_quy_doi = any("Số lượng quy đổi" in df.columns for df in exec_tables.values())
-    if has_sl_quy_doi and "Số lượng quy đổi" not in patched and "Tỉ lệ quy đổi" not in patched and "Hệ số" not in patched:
+    if has_sl_quy_doi and "Tỉ lệ quy đổi" not in patched and "Hệ số" not in patched:
         large_units: Set[str] = set()
         for tname, df in exec_tables.items():
             for col in df.columns:
@@ -1011,21 +1031,42 @@ def format_accounting_context(
 
     # Rulebook §5 Unsold goods guidance
     qtext = normalize_text(question)
-    if any(k in qtext for k in ("khong ban duoc", "hang e", "mat hang e", "ban ko dc mon nao")):
+    if any(k in qtext for k in ("khong ban duoc", "ko ban duoc", "ko ban dc", "hang e", "mat hang e", "mat hang bi e", "bi e", "ban ko dc", "e hang")):
         notes.append(
-            "- Hàng ế trong kỳ (Rulebook §5 line 69): Là các mặt hàng ĐÃ TỪNG BÁN trước kỳ (có trong đơn hàng trước ngày bắt đầu kỳ) nhưng trong kỳ có số lượng bán = 0: `len(set(df[df[date_col] < start_date][prod_col]) - set(df[(df[date_col] >= start_date) & (df[date_col] < end_date)][prod_col]))`. KHÔNG lấy từ danh mục hàng."
+            "- Hàng ế trong kỳ (Rulebook §5 line 69): Là các mặt hàng ĐÃ TỪNG BÁN trước kỳ (có trong đơn hàng trước ngày bắt đầu kỳ) nhưng trong kỳ có số lượng bán = 0: `len(set(df[df[date_col] < start_date][prod_col]) - set(df[(df[date_col] >= start_date) & (df[date_col] < (end_date + pd.Timedelta(days=1)))][prod_col]))`. KHÔNG lấy từ danh mục hàng."
         )
 
     # Rulebook §5 Weighted average import price guidance
-    if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh")):
+    if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh", "don gia nhap")):
         notes.append(
-            "- Giá nhập bình quân (Rulebook §5 line 65): Phải tính bình quân gia quyền theo số lượng nhập: `Tổng tiền nhập / Tổng số lượng nhập` (hoặc `(df['Số lượng'] * df['Đơn giá']).sum() / df['Số lượng'].sum()`), KHÔNG lấy `df['Đơn giá'].mean()`. Làm tròn về đồng."
+            "- Giá nhập bình quân một đơn vị (Rulebook §5 line 65): Phải tính bình quân gia quyền theo số lượng nhập của đơn vị đó: `(df['Số lượng'] * df['Đơn giá']).sum() / df['Số lượng'].sum()`. Chú ý: dùng cột 'Số lượng' (theo đơn vị được hỏi), KHÔNG chia cho 'Số lượng (ĐVT cơ bản)'. Làm tròn về đồng."
+        )
+
+    # Rulebook §4 line 58 Debt added & Debt paid guidance
+    if any(k in qtext for k in ("no them", "ghi no them", "mua chiu them", "tra no", "tra bot no", "thu no", "thu hoi no", "thu hoi cong no", "tra duoc", "mua chiu")):
+        notes.append(
+            "- Công nợ phát sinh và trả nợ trong kỳ (Rulebook §4 line 58):"
+            "\n  + Nợ thêm trong kỳ: Là phần chưa thanh toán lúc mua của các đơn ghi nợ/mua chịu phát sinh trong kỳ: `(Tổng đơn - Tiền trả lúc mua)` (hoặc cột `Còn nợ` của đơn nợ lúc lập). Không tính đơn đã hủy/trả hàng."
+            "\n  + Trả nợ / Thu nợ trong kỳ: Là tổng số tiền thu/trả nợ phát sinh trong kỳ trên Sổ quỹ / Phiếu thu / Thanh toán (chỉ tính tiền thu nợ cho các đơn nợ, không tính tiền khách trả ngay lúc mua)."
+            "\n  + Nếu câu hỏi yêu cầu ghi 2 số theo thứ tự: trả về danh sách 2 số `[nợ_thêm, trả_được]`."
+        )
+
+    # Rulebook §6 Blister/Pill even/odd inventory guidance
+    if any(k in qtext for k in ("vi chan", "le vien", "chan bao nhieu vi", "le bao nhieu vien")):
+        notes.append(
+            "- Tồn kho vỉ chẵn, viên lẻ (Rulebook §6): Tìm số viên trên mỗi vỉ trong quy cách đóng gói ở tên thuốc (ví dụ: 'hộp 10 vỉ x 8 viên' -> 8 viên/vỉ, '10 vỉ x 10 viên' -> 10 viên/vỉ). Số vỉ chẵn = tồn_kho // viên_mỗi_vỉ; số viên lẻ = tồn_kho % viên_mỗi_vỉ. Trả về danh sách 2 số: `[vỉ_chẵn, viên_lẻ]`."
+        )
+
+    # Rulebook §5 line 71 Price change comparison guidance
+    if any(k in qtext for k in ("tang gia", "doi gia", "len gia", "giam gia")) and any(k in qtext for k in ("ngay ke tu", "ngay truoc", "ngay lien truoc", "ngay ngay truoc")):
+        notes.append(
+            "- So sánh lượng bán trước/sau ngày đổi giá D trong N ngày (Rulebook §5 line 71): Khoảng sau là `[D, D + pd.Timedelta(days=N)]`; khoảng ngay trước là `[D - pd.Timedelta(days=N), D]`. % thay đổi = `(lượng_sau - lượng_trước) / lượng_trước * 100`. Tính theo đơn vị câu hỏi yêu cầu (viên, ly, con, lon...)."
         )
 
     # Rulebook §6 Active ingredient guidance
-    if any(k in qtext for k in ("hoat chat", "khe don")):
+    if any(k in qtext for k in ("hoat chat", "khe don", "thuoc ke don", "ke don")):
         notes.append(
-            "- Hoạt chất & Thuốc kê đơn (Rulebook §6): Doanh thu theo hoạt chất là thuốc có hoạt chất khớp đúng như vậy trong danh mục thuốc. Thuốc phối hợp nhiều hoạt chất là một loại riêng, không tính vào từng hoạt chất riêng lẻ."
+            "- Hoạt chất & Thuốc kê đơn (Rulebook §6): Doanh thu theo hoạt chất là thuốc có hoạt chất khớp đúng như vậy trong danh mục thuốc. Thuốc phối hợp nhiều hoạt chất là một loại riêng, không tính vào từng hoạt chất riêng lẻ. Tỉ trọng (%): lấy doanh thu thuốc kê đơn chia cho tổng doanh thu toàn bộ (cùng loại doanh thu trước giảm và loại trừ đơn hủy/trả)."
         )
 
     if not notes:
