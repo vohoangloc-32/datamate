@@ -123,32 +123,67 @@ sub_path = '$OUTPUT_DIR/submission.jsonl'
 ans_path = '$DATA_DIR/answers.jsonl'
 q_path = '$QUESTIONS_FILE'
 
-metrics = compute_pa(sub_path, ans_path)
-print('Total Questions  :', metrics.total_questions)
-print(f'Correct (+1 pt)  : {metrics.correct_count} ({metrics.accuracy*100:.1f}%)')
-print(f'Wrong   (-1 pt)  : {metrics.wrong_count} ({metrics.wrong_rate*100:.1f}%)')
-print(f'Abstained (0 pt) : {metrics.abstain_count} ({metrics.abstain_rate*100:.1f}%)')
+sub_records = [json.loads(l) for l in open(sub_path, encoding='utf-8-sig') if l.strip()]
+preds = {r['id']: r for r in sub_records}
+refs = {json.loads(l)['id']: json.loads(l) for l in open(ans_path, encoding='utf-8-sig') if l.strip() and json.loads(l)['id'] in preds}
+
+metrics = compute_pa(preds, refs)
+total = metrics['total']
+correct = metrics['correct']
+wrong = metrics['wrong']
+abstain = metrics['abstain']
+pa = metrics['pa']
+
+print('\n' + '=' * 60)
+print('🏆 DATAMATE OFFICIAL BENCHMARK SCORE (EVALUATED SUBSET)')
+print('=' * 60)
+print(f'Total Questions  : {total}')
+print(f'Correct (+1 pt)  : {correct} ({correct/total*100:.1f}%)')
+print(f'Wrong   (-1 pt)  : {wrong} ({wrong/total*100:.1f}%)')
+print(f'Abstained (0 pt) : {abstain} ({abstain/total*100:.1f}%)')
 print('-' * 60)
-print(f'🔥 Penalized Accuracy (PA): {metrics.penalized_accuracy:+.4f} ({metrics.penalized_accuracy*100:+.2f}%)')
+print(f'🔥 Penalized Accuracy (PA): {pa:+.4f} ({pa*100:+.2f}%)')
 print('=' * 60)
 
-if metrics.breakdown_by_type:
-    df = pd.DataFrame.from_dict(metrics.breakdown_by_type, orient='index').reset_index()
-    df['PA'] = df['pa'].apply(lambda x: f'{x:+.4f}')
-    df['Acc%'] = (df['correct'] / df['total'] * 100).apply(lambda x: f'{x:.1f}%')
-    print(df[['index', 'total', 'correct', 'wrong', 'abstain', 'PA', 'Acc%']].to_string(index=False))
+type_rows = []
+for t, s in sorted(metrics.get('per_type', {}).items()):
+    tot = s['total']
+    cor = s['correct']
+    wro = s['wrong']
+    abs_ = s['abstain']
+    sub_pa = (cor - wro) / tot if tot > 0 else 0.0
+    type_rows.append({
+        'Type': t,
+        'Total': tot,
+        'Correct': cor,
+        'Wrong': wro,
+        'Abstain': abs_,
+        'PA': f'{sub_pa:+.4f}',
+        'Acc%': f'{cor/tot*100:.1f}%' if tot > 0 else '0.0%'
+    })
+print('\n📊 DETAILED BREAKDOWN BY QUESTION TYPE:')
+print(pd.DataFrame(type_rows).to_string(index=False))
+print('=' * 60)
 
 # Generate error_analysis.csv & abstain_analysis.csv
-sub_map = {json.loads(l)['id']: json.loads(l) for l in open(sub_path, encoding='utf-8-sig') if l.strip()}
-gt_map = {json.loads(l)['id']: json.loads(l) for l in open(ans_path, encoding='utf-8-sig') if l.strip()}
 q_map = {json.loads(l)['id']: json.loads(l) for l in open(q_path, encoding='utf-8-sig') if l.strip()}
 
 errors, abstains = [], []
-for qid, gt in gt_map.items():
-    if qid not in sub_map: continue
-    sub = sub_map[qid]
+for qid, gt in refs.items():
+    if qid not in preds: continue
+    sub = preds[qid]
     sc = score_answer(sub, gt)
-    row = {'id': qid, 'business_id': q_map.get(qid, {}).get('business_id', ''), 'question': q_map.get(qid, {}).get('question', ''), 'pred_type': sub.get('type'), 'gt_type': gt.get('type'), 'pred_val': sub.get('value'), 'gt_val': gt.get('value')}
+    q_meta = q_map.get(qid, {})
+    row = {
+        'id': qid,
+        'business_id': q_meta.get('business_id', ''),
+        'question': q_meta.get('question', ''),
+        'pred_type': sub.get('type'),
+        'gt_type': gt.get('type'),
+        'pred_val': sub.get('value'),
+        'gt_val': gt.get('value'),
+        'as_of_date': q_meta.get('as_of_date', '')
+    }
     if sc < 0: errors.append(row)
     elif sc == 0: abstains.append(row)
 
