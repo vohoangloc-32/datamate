@@ -2,33 +2,61 @@
 set -e
 
 echo "============================================================"
-echo "🚀 DataMate 1-Click Runner for Vast.ai / Linux Workstation"
+echo "🚀 DataMate 1-Click Runner for Dual RTX 5090 (Vast.ai)"
 echo "============================================================"
 
-# 1. Hardware verification
+# 1. Hardware verification & Pre-flight checks
 nvidia-smi
 
-# 2. Check / update code
-echo "📦 Checking Git repository..."
-if [ ! -d ".git" ]; then
-    git clone --depth 1 -b loc https://github.com/vohoangloc-32/datamate.git .
+# Check free disk space (in GB)
+FREE_DISK_GB=$(df -BG . | tail -1 | awk '{print $4}' | sed 's/G//')
+echo "💾 Available Disk Space: ${FREE_DISK_GB} GB"
+if [ "$FREE_DISK_GB" -lt 25 ]; then
+    echo "⚠️ WARNING: Free disk space is ${FREE_DISK_GB} GB (< 25 GB)!"
+    echo "👉 If your instance has only 16GB disk, please increase Disk Space to 60-80 GB in Vast.ai configuration."
+fi
+
+# Detect GPU count for Tensor Parallelism
+GPU_COUNT=$(nvidia-smi -L | wc -l)
+if [ "$GPU_COUNT" -ge 2 ]; then
+    VLLM_TP=2
+    echo "🔥 Detected $GPU_COUNT GPUs: Tensor Parallelism VLLM_TP=2 enabled!"
 else
-    git fetch origin loc --depth 1
-    git checkout loc
-    git reset --hard origin/loc
+    VLLM_TP=1
+    echo "⚡ Detected single GPU: Tensor Parallelism VLLM_TP=1 enabled."
+fi
+
+# 2. Check / update code with mirror fallback for Hong Kong / Asia IPs
+echo "📦 Checking Git repository..."
+REPO_URL="https://github.com/vohoangloc-32/datamate.git"
+MIRROR_URL="https://ghproxy.net/https://github.com/vohoangloc-32/datamate.git"
+BRANCH="loc"
+
+if [ ! -d ".git" ]; then
+    echo "Cloning repository with --depth 1..."
+    git clone --depth 1 -b "$BRANCH" "$REPO_URL" . || git clone --depth 1 -b "$BRANCH" "$MIRROR_URL" .
+else
+    echo "Updating latest code from branch $BRANCH..."
+    git fetch origin "$BRANCH" --depth 1
+    git checkout "$BRANCH"
+    git reset --hard "origin/$BRANCH"
 fi
 
 # 3. Dependencies & Unit Tests
 echo "🔧 Installing requirements and verifying test suite..."
-pip install -q vllm openpyxl xlrd tabulate pytest huggingface_hub pandas
+pip install -q vllm openpyxl xlrd tabulate pytest huggingface_hub pandas hf-transfer
 pytest tests/ -q
 
-# 4. Download model weights
+# 4. Download model weights with Asia mirror support
 MODEL_REPO="Qwen/Qwen2.5-Coder-14B-Instruct-GPTQ-Int8"
 LOCAL_MODEL_DIR="$HOME/model_cache/Qwen2.5-Coder-14B-Instruct-GPTQ-Int8"
 
+# Enable HF mirror for max speed on Vast.ai Hong Kong / Asia instances
+export HF_ENDPOINT="https://hf-mirror.com"
+export HF_HUB_ENABLE_HF_TRANSFER="1"
+
 if [ ! -d "$LOCAL_MODEL_DIR" ] || [ $(ls -1 "$LOCAL_MODEL_DIR" | wc -l) -lt 5 ]; then
-    echo "⬇️ Downloading $MODEL_REPO to $LOCAL_MODEL_DIR..."
+    echo "⬇️ Downloading $MODEL_REPO to $LOCAL_MODEL_DIR (via high-speed mirror)..."
     python3 -c "
 from huggingface_hub import snapshot_download
 import os
@@ -64,14 +92,15 @@ else
 fi
 
 echo "============================================================"
-echo "Starting Inference..."
+echo "Starting Inference (Dual RTX 5090 Optimized)..."
 echo "Mode           : $MODE"
 echo "Data Dir       : $DATA_DIR"
 echo "Questions File : $QUESTIONS_FILE"
 echo "Confidence     : $CONFIDENCE"
+echo "VLLM_TP        : $VLLM_TP"
 echo "============================================================"
 
-export VLLM_TP=1
+export VLLM_TP="$VLLM_TP"
 export VLLM_DTYPE=auto
 export VLLM_MAX_MODEL_LEN=16384
 export VLLM_MAX_NEW_TOKENS=1024
@@ -112,7 +141,7 @@ if metrics.breakdown_by_type:
     df['Acc%'] = (df['correct'] / df['total'] * 100).apply(lambda x: f'{x:.1f}%')
     print(df[['index', 'total', 'correct', 'wrong', 'abstain', 'PA', 'Acc%']].to_string(index=False))
 
-# Generate error_analysis.csv
+# Generate error_analysis.csv & abstain_analysis.csv
 sub_map = {json.loads(l)['id']: json.loads(l) for l in open(sub_path, encoding='utf-8-sig') if l.strip()}
 gt_map = {json.loads(l)['id']: json.loads(l) for l in open(ans_path, encoding='utf-8-sig') if l.strip()}
 q_map = {json.loads(l)['id']: json.loads(l) for l in open(q_path, encoding='utf-8-sig') if l.strip()}
@@ -129,6 +158,7 @@ for qid, gt in gt_map.items():
 pd.DataFrame(errors).to_csv('$OUTPUT_DIR/error_analysis.csv', index=False, encoding='utf-8-sig')
 pd.DataFrame(abstains).to_csv('$OUTPUT_DIR/abstain_analysis.csv', index=False, encoding='utf-8-sig')
 print(f'📊 Generated $OUTPUT_DIR/error_analysis.csv ({len(errors)} errors)')
+print(f'📊 Generated $OUTPUT_DIR/abstain_analysis.csv ({len(abstains)} abstains)')
 "
 fi
 
