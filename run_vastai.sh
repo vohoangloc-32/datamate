@@ -10,9 +10,13 @@ nvidia-smi
 
 # 2. Check / update code
 echo "📦 Checking Git repository..."
-git fetch origin
-git checkout loc
-git reset --hard origin/loc
+if [ ! -d ".git" ]; then
+    git clone --depth 1 -b loc https://github.com/vohoangloc-32/datamate.git .
+else
+    git fetch origin loc --depth 1
+    git checkout loc
+    git reset --hard origin/loc
+fi
 
 # 3. Dependencies & Unit Tests
 echo "🔧 Installing requirements and verifying test suite..."
