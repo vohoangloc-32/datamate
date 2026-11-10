@@ -26,15 +26,14 @@ else
     echo "⚡ Detected single GPU: Tensor Parallelism VLLM_TP=1 enabled."
 fi
 
-# 2. Check / update code with mirror fallback for Hong Kong / Asia IPs
+# 2. Check / update code
 echo "📦 Checking Git repository..."
 REPO_URL="https://github.com/vohoangloc-32/datamate.git"
-MIRROR_URL="https://ghproxy.net/https://github.com/vohoangloc-32/datamate.git"
 BRANCH="loc"
 
 if [ ! -d ".git" ]; then
     echo "Cloning repository with --depth 1..."
-    git clone --depth 1 -b "$BRANCH" "$REPO_URL" . || git clone --depth 1 -b "$BRANCH" "$MIRROR_URL" .
+    git clone --depth 1 -b "$BRANCH" "$REPO_URL" .
 else
     echo "Updating latest code from branch $BRANCH..."
     git fetch origin "$BRANCH" --depth 1
@@ -47,16 +46,14 @@ echo "🔧 Installing requirements and verifying test suite..."
 pip install -q vllm openpyxl xlrd tabulate pytest huggingface_hub pandas hf-transfer
 pytest tests/ -q
 
-# 4. Download model weights with Asia mirror support
+# 4. Download model weights directly from Hugging Face
 MODEL_REPO="Qwen/Qwen2.5-Coder-14B-Instruct-GPTQ-Int8"
 LOCAL_MODEL_DIR="$HOME/model_cache/Qwen2.5-Coder-14B-Instruct-GPTQ-Int8"
 
-# Enable HF mirror for max speed on Vast.ai Hong Kong / Asia instances
-export HF_ENDPOINT="https://hf-mirror.com"
 export HF_HUB_ENABLE_HF_TRANSFER="1"
 
 if [ ! -d "$LOCAL_MODEL_DIR" ] || [ $(ls -1 "$LOCAL_MODEL_DIR" | wc -l) -lt 5 ]; then
-    echo "⬇️ Downloading $MODEL_REPO to $LOCAL_MODEL_DIR (via high-speed mirror)..."
+    echo "⬇️ Downloading $MODEL_REPO to $LOCAL_MODEL_DIR..."
     python3 -c "
 from huggingface_hub import snapshot_download
 import os
