@@ -279,6 +279,7 @@ class DataMatePipeline:
         self._prompt_token_counter = prompt_token_counter
         self._max_prompt_tokens = max_prompt_tokens
         self._retry_engine = None
+        self._llm_load_error: Optional[Exception] = None
 
         # Data cache
         self._data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -291,10 +292,17 @@ class DataMatePipeline:
 
     def _ensure_llm_loaded(self) -> RetryEngine:
         """Lazily load the LLM model if not provided."""
+        if self._llm_load_error is not None:
+            raise self._llm_load_error
+
         if self._llm_generate_fn is None:
             logger.info("Loading LLM model from %s...", self.model_dir)
             t0 = time.time()
-            self._llm_generate_fn = create_llm_generate_fn(self.model_dir)
+            try:
+                self._llm_generate_fn = create_llm_generate_fn(self.model_dir)
+            except Exception as e:
+                self._llm_load_error = e
+                raise
             logger.info("LLM loaded in %.1fs", time.time() - t0)
 
         if self._prompt_token_counter is None:
