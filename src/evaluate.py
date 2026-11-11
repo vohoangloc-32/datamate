@@ -325,12 +325,14 @@ def main():
                         help="Path to answers.jsonl (reference)")
     parser.add_argument("--output", type=str, default=None,
                         help="Path to write detailed results JSON")
+    parser.add_argument("--subset-only", action="store_true",
+                        help="Evaluate only on questions present in the submission file")
 
     args = parser.parse_args()
 
     # Load predictions
     predictions = {}
-    with open(args.submission, "r", encoding="utf-8") as f:
+    with open(args.submission, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -339,12 +341,13 @@ def main():
 
     # Load references
     references = {}
-    with open(args.answers, "r", encoding="utf-8") as f:
+    with open(args.answers, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
                 entry = json.loads(line)
-                references[entry["id"]] = entry
+                if not args.subset_only or entry["id"] in predictions:
+                    references[entry["id"]] = entry
 
     # Compute PA
     results = compute_pa(predictions, references)

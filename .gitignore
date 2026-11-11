@@ -4,9 +4,11 @@ __pycache__/
 .venv/
 venv/
 result/
+results/
 *.log
 node_modules/
 log.txt
 context_*/
 results_*/
 results*.zip
+scratch/

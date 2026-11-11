@@ -19,6 +19,29 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
+import numpy as np
+
+# Preserve left-table column names after merge suffix collision (e.g. Trạng thái_x -> Trạng thái)
+_orig_df_merge = pd.DataFrame.merge
+_orig_pd_merge = pd.merge
+
+def _resolve_merge_suffixes(res):
+    if isinstance(res, pd.DataFrame):
+        for c in list(res.columns):
+            if isinstance(c, str) and c.endswith("_x"):
+                base = c[:-2]
+                if base not in res.columns:
+                    res[base] = res[c]
+    return res
+
+def _wrapped_df_merge(self, *args, **kwargs):
+    return _resolve_merge_suffixes(_orig_df_merge(self, *args, **kwargs))
+
+def _wrapped_pd_merge(*args, **kwargs):
+    return _resolve_merge_suffixes(_orig_pd_merge(*args, **kwargs))
+
+pd.DataFrame.merge = _wrapped_df_merge
+pd.merge = _wrapped_pd_merge
 
 from .accounting_cleaner import (
     patch_code_and_tables_for_rulebook,
@@ -157,6 +180,7 @@ _ALLOWED_IMPORTS = frozenset({
     "pandas", "numpy", "math", "re", "datetime", "calendar", "unicodedata",
     "collections", "itertools", "functools", "statistics", "decimal",
     "fractions", "string", "operator", "typing", "json", "time",
+    "_strptime", "dateutil",
 })
 
 
@@ -259,6 +283,16 @@ def _create_safe_globals(tables: Dict[str, pd.DataFrame],
             and name not in _RESERVED_EXEC_NAMES
         ):
             safe_globals[name] = df_copy
+        if name.endswith("__monthly_combined") or name.endswith("__combined"):
+            base_prefix = name.rsplit("__", 1)[0]
+            base_var = re.sub(r"\W", "_", base_prefix, flags=re.UNICODE)
+            if (
+                base_var.isidentifier()
+                and not keyword.iskeyword(base_var)
+                and base_var not in _RESERVED_EXEC_NAMES
+                and base_var not in safe_globals
+            ):
+                safe_globals[base_var] = df_copy
 
     if len(tables) == 1:
         only_table = next(iter(tables))
@@ -362,6 +396,14 @@ class CodeExecutor:
             raw_res = exec_globals.get("result", None)
             if question and question_is_average_order_value(question):
                 raw_res = round_half_up_vnd(raw_res)
+            # Unpack (label, val) items when list is returned as dict.items()
+            if (
+                isinstance(raw_res, (list, tuple))
+                and len(raw_res) > 0
+                and all(isinstance(x, (tuple, list)) and len(x) == 2 for x in raw_res)
+            ):
+                if any(isinstance(x[1], (int, float, np.integer, np.floating)) for x in raw_res):
+                    raw_res = [x[1] for x in raw_res]
             result.result = raw_res
             result.answer_type = exec_globals.get("answer_type", "abstain")
             result.success = True

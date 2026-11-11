@@ -23,6 +23,13 @@ import pandas as pd
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Patch transformers to prevent torchaudio CUDA mismatch RuntimeError on custom environments
+try:
+    import transformers.utils.import_utils as _t_iu
+    _t_iu.is_torchaudio_available = lambda: False
+except Exception:
+    pass
+
 from modules.data_loader import load_business_data, clear_cache
 from modules.schema_registry import SchemaRegistry
 from modules.readme_parser import parse_readme
@@ -37,7 +44,11 @@ from modules.analysis_plan import (
     execute_analysis_plan,
 )
 from modules.retry_engine import RetryEngine
-from modules.answer_formatter import format_answer, build_submission_line
+from modules.answer_formatter import (
+    format_answer,
+    build_submission_line,
+    resolve_entity_codes_in_answer,
+)
 from modules.confidence_gate import ConfidenceGate
 from modules.question_logger import QuestionLogger
 from modules.value_grounder import ValueGrounder
@@ -96,6 +107,13 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
         Function that takes a prompt and returns the generated text.
     """
     try:
+        # Ensure torchaudio check is disabled even if transformers is reloaded
+        try:
+            import transformers.utils.import_utils as _t_iu
+            _t_iu.is_torchaudio_available = lambda: False
+        except Exception:
+            pass
+
         from vllm import LLM, SamplingParams  # type: ignore  # optional dependency
 
         # Number of GPUs used for tensor parallelism. A 3B model fits on a single
@@ -261,6 +279,7 @@ class DataMatePipeline:
         self._prompt_token_counter = prompt_token_counter
         self._max_prompt_tokens = max_prompt_tokens
         self._retry_engine = None
+        self._llm_load_error: Optional[Exception] = None
 
         # Data cache
         self._data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -273,10 +292,17 @@ class DataMatePipeline:
 
     def _ensure_llm_loaded(self) -> RetryEngine:
         """Lazily load the LLM model if not provided."""
+        if self._llm_load_error is not None:
+            raise self._llm_load_error
+
         if self._llm_generate_fn is None:
             logger.info("Loading LLM model from %s...", self.model_dir)
             t0 = time.time()
-            self._llm_generate_fn = create_llm_generate_fn(self.model_dir)
+            try:
+                self._llm_generate_fn = create_llm_generate_fn(self.model_dir)
+            except Exception as e:
+                self._llm_load_error = e
+                raise
             logger.info("LLM loaded in %.1fs", time.time() - t0)
 
         if self._prompt_token_counter is None:
@@ -435,19 +461,25 @@ class DataMatePipeline:
                     expected_type=q_info.expected_type,
                     token_counter=self._prompt_token_counter,
                     max_prompt_tokens=self._max_prompt_tokens,
-                    question=question,
+                    question=clean_question,
                 )
 
             # 6. Confidence gate
+            formatted_ans = format_answer(
+                value=exec_result.result,
+                answer_type=exec_result.answer_type,
+                question=clean_question,
+            )
+            formatted_ans = resolve_entity_codes_in_answer(
+                answer=formatted_ans,
+                question=clean_question,
+                tables=tables,
+            )
             final_answer = self.confidence_gate.evaluate(
-                answer=format_answer(
-                    value=exec_result.result,
-                    answer_type=exec_result.answer_type,
-                    question=question,
-                ),
+                answer=formatted_ans,
                 question_info=q_info,
                 execution_retries=retries,
-                question=question,
+                question=clean_question,
                 code=exec_result.code or "",
                 tables=tables,
             )
@@ -494,7 +526,7 @@ class DataMatePipeline:
             return
 
         questions = []
-        with open(questions_path, "r", encoding="utf-8") as f:
+        with open(questions_path, "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line:

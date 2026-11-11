@@ -142,6 +142,8 @@ _ORDER_ID_TOKENS: Tuple[str, ...] = (
     "sophieu",
     "maphieu",
     "magd",
+    "magiaodich",
+    "madonhang",
 )
 
 # Strictly accented Vietnamese NFC subtotal/footer patterns so customer
@@ -265,23 +267,32 @@ def dedup_order_table_rows(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 _NEEDS_ALL_STATUS_RE = re.compile(
-    r"\b(huy|tra hang|tra lai|hoan|no|cong no|gia ban|dot giao|ti le|ty le)\b"
+    r"\b(huy|tra hang|tra lai|hoan|no|cong no|gia ban|dot giao|dot hang|luot giao|chuyen giao|ti le|ty le)\b"
+    r"|\b(?:xe\s+(?:da\s+)?giao|xe\s+cho|giao\s+(?:\w+\s+){0,3}dot)\b"
 )
 _RANK_CUSTOMER_RE = re.compile(
-    r"\b(khach hang|khach nao|ai mua|khach mua)\b.*\b(nhieu nhat|cao nhat|top|xep hang|nhieu don|nhieu tien|nhiu tien)\b"
-    r"|\b(top|nhieu nhat|cao nhat)\b.*\b(khach)\b"
+    r"\b(khach hang|khach nao|ai mua|ai la khach|khach mua)\b.*\b(nhieu nhat|cao nhat|top|xep hang|nhieu don|nhiu don|nhieu lan|nhiu lan|nhieu tien|nhiu tien)\b"
+    r"|\b(top|nhieu nhat|cao nhat|liet ke \d+|bang \d+)\b.*\b(khach)\b"
+    r"|\b(?:\d+|top)\s+khach\b.*\b(?:cao|nhieu|lon)\s+nhat\b"
+    r"|\bkhach\b.*\b(?:tong\s+tien|chi\s+tieu|doanh\s+thu|so\s+don|so\s+lan)\b.*\b(?:cao|nhieu|lon)\s+nhat\b"
+    r"|\b(khach|khach hang)\b.*\bmua tu \d+ (?:don|lan|bill)\b"
+    r"|\b(?:bao nhieu|bnhiu|bn|may|so) khach\b.*\b(?:da mua|mua hang|mua tu)\b"
 )
 _AOV_RE = re.compile(
     r"\b(trung binh moi (?:don|bill|order)|binh quan moi (?:don|bill|order)|gia tri trung binh mot (?:don|bill|order)"
     r"|doanh thu trung binh.*(?:don|bill|order)|dthu trung binh.*(?:don|bill|order)|doanh thu binh quan.*(?:don|bill|order)|dthu binh quan.*(?:don|bill|order))\b"
 )
 _PURE_REVENUE_RE = re.compile(
-    r"\b(doanh thu|dthu|revenue|ban duoc bao nhieu tien|ban dc bao nhieu tien"
-    r"|ban duoc bn tien|ban dc nhieu tien|mang ve bao nhieu doanh thu|mang ve bn dthu"
-    r"|mang ve bnhiu dthu|doanh thu binh quan)\b"
+    r"\b(doanh thu|dthu|revenue|ban (?:dc|duoc).*?(?:tien|bao nhieu|bn|nhiu)|thu (?:ve|duoc).*?tien|tong tien ban hang|tien ban hang|tien hang|ban.*bao nhieu tien)\b"
+)
+_MONETARY_AVG_RE = re.compile(
+    r"\b(gia nhap binh quan|nhap vao gia binh quan|gia ban binh quan|don gia binh quan"
+    r"|gia tri trung binh|dthu binh quan|doanh thu binh quan|tien trung binh"
+    r"|doanh thu trung binh|dthu trung binh|chi phi trung binh|trung binh moi don"
+    r"|binh quan moi don|gia binh quan|trung binh.*tien|binh quan.*tien|trung binh moi dot|binh quan moi dot)\b"
 )
 _DEBT_OR_PAID_RE = re.compile(
-    r"\b(no|cong no|da tra|da thu|thuc thu|con no|phai thu)\b"
+    r"\b(no|cong no|da tra|da thu|thuc thu|con no|phai thu|tra bot no|thu no)\b"
 )
 _SPECIFIC_CANCEL_REASON_RE = re.compile(
     r"\b(vi|ly do|li do|nguyen nhan|giao tre|het hang|doi y)\b"
@@ -297,24 +308,40 @@ _WALKIN_VALUES: Set[str] = {
 }
 
 
+def _normalize_question(question: str) -> str:
+    """Normalize question slang/Telex typos and fold Vietnamese diacritics."""
+    try:
+        from .question_understanding import normalize_question_slang
+        question = normalize_question_slang(question)
+    except Exception:
+        pass
+    return normalize_text(question)
+
+
 def question_needs_all_statuses(question: str) -> bool:
     """True when the question asks about cancelled/returned orders, rates, debt, selling price, or delivery batches."""
-    return bool(_NEEDS_ALL_STATUS_RE.search(normalize_text(question)))
+    return bool(_NEEDS_ALL_STATUS_RE.search(_normalize_question(question)))
 
 
 def question_is_customer_ranking(question: str) -> bool:
-    """True when the question ranks or finds top individual customers."""
-    return bool(_RANK_CUSTOMER_RE.search(normalize_text(question)))
+    """True when the question ranks or finds top individual customers or counts repeat customers."""
+    return bool(_RANK_CUSTOMER_RE.search(_normalize_question(question)))
 
 
 def question_is_average_order_value(question: str) -> bool:
     """True when the question asks for average value/revenue per order (Rulebook §3 line 48)."""
-    return bool(_AOV_RE.search(normalize_text(question)))
+    return bool(_AOV_RE.search(_normalize_question(question)))
+
+
+def question_is_monetary_average(question: str) -> bool:
+    """True when question asks for average/mean of monetary values (Rulebook §9 line 133)."""
+    q = _normalize_question(question)
+    return bool(_MONETARY_AVG_RE.search(q)) and not bool(re.search(r"\b(ti le|ty le|phan tram|%|so luong|so don|so ngay)\b", q))
 
 
 def question_is_pure_revenue(question: str) -> bool:
     """True when the question asks for revenue and not debt/paid amounts."""
-    q = normalize_text(question)
+    q = _normalize_question(question)
     return bool(_PURE_REVENUE_RE.search(q)) and not bool(_DEBT_OR_PAID_RE.search(q))
 
 
@@ -359,6 +386,28 @@ def prepare_tables_for_question(
                 returned_ids = set(df[oid].dropna().unique())
                 if filter_status:
                     bad_order_ids.update(returned_ids)
+        # Rulebook §1 line 10: detect return quantity columns (e.g. BanHang_BanTheoLo, DonHang_Lo)
+        for col in df.columns:
+            c_comp = compact_identifier(col)
+            if any(k in c_comp for k in ("sltra", "soluongtra", "sltradvtcoban", "soluongtradvtcoban")):
+                s_numeric = pd.to_numeric(df[col], errors="coerce").fillna(0)
+                ret_mask = s_numeric > 0
+                if ret_mask.any():
+                    oid = find_order_id_column(df)
+                    if oid is not None:
+                        returned_ids = set(df.loc[ret_mask, oid].dropna().unique())
+                        if filter_status:
+                            bad_order_ids.update(returned_ids)
+            # Rulebook §1: detect negative quantity in sales lines (handwritten ledger return records)
+            elif any(k in c_comp for k in ("soluong", "sl", "qty", "quantity", "soluonghang")) and not any(k in c_comp for k in ("tra", "quy", "ton", "nhap")):
+                s_numeric = pd.to_numeric(df[col], errors="coerce").fillna(0)
+                neg_mask = s_numeric < 0
+                if neg_mask.any():
+                    oid = find_order_id_column(df)
+                    if oid is not None:
+                        neg_ids = set(df.loc[neg_mask, oid].dropna().unique())
+                        if filter_status:
+                            bad_order_ids.update(neg_ids)
 
     for name, df in tables.items():
         work = remove_subheader_and_subtotal_rows(df.copy())
@@ -381,27 +430,49 @@ def prepare_tables_for_question(
         if filter_walkin:
             for col in data_cols:
                 c_comp = compact_identifier(col)
-                if any(
-                    t in c_comp for t in ("tenkhach", "khachhang", "benmua", "tenkh")
-                ) and not any(x in c_comp for x in ("nhom", "loai", "ma")):
+                if (
+                    any(t in c_comp for t in ("tenkhach", "khachhang", "benmua", "tenkh"))
+                    or c_comp in ("khach", "kh", "khachmua", "nguoimua")
+                ) and not any(x in c_comp for x in ("nhom", "loai", "ma", "so")):
                     s_col = work[col].dropna().astype(str)
                     vc_map = {
                         v: normalize_text(v) in _WALKIN_VALUES for v in s_col.unique()
                     }
-                    walkin_mask = work[col].map(vc_map).fillna(False)
+                    walkin_mask = work[col].map(vc_map).fillna(True).astype(bool)
                     if walkin_mask.any():
                         work = work.loc[~walkin_mask].copy()
+                elif c_comp in ("makh", "makhach", "makhachhang", "customerid"):
+                    id_walkin = (
+                        work[col].isna()
+                        | work[col].astype(str).str.strip().map(
+                            lambda v: not v or normalize_text(v) in _WALKIN_VALUES
+                        )
+                    ).astype(bool)
+                    if id_walkin.any() and not id_walkin.all():
+                        work = work.loc[~id_walkin].copy()
+
+        # Rulebook §6 VLXD: deduplicate (order_id, trip_col) directly when counting delivery trips
+        if question:
+            q_norm_prep = _normalize_question(question)
+            if any(k in q_norm_prep for k in ("dot giao", "luot giao", "xe da giao", "may dot", "bao nhieu dot", "so dot", "chuyen giao")) and not any(
+                bool(re.search(rf"\b{u}\b", q_norm_prep)) for u in ("kg", "tan", "m3", "vien", "so luong")
+            ) and not bool(re.search(r"\bbao\s+(?:xi|cat|da|gao)\b", q_norm_prep)):
+                trip_col = next((c for c in work.columns if compact_identifier(c) in ("luotgiao", "langiao", "dotgiao")), None)
+                if trip_col and oid:
+                    work = work.drop_duplicates(subset=[oid, trip_col]).reset_index(drop=True)
 
         out[name] = work
 
-    # Propagate excluded order IDs to detail tables sharing an order ID column
+    # Propagate excluded order IDs across all tables sharing any order ID column
     if filter_status and bad_order_ids:
+        bad_id_strs = {str(x).strip() for x in bad_order_ids if pd.notna(x)}
         for name, work in list(out.items()):
-            oid = find_order_id_column(work)
-            if oid is not None:
-                drop = work[oid].isin(bad_order_ids)
+            oid_cols = [c for c in work.columns if any(token in compact_identifier(c) for token in _ORDER_ID_TOKENS)]
+            for col in oid_cols:
+                drop = work[col].astype(str).str.strip().isin(bad_id_strs)
                 if drop.any():
-                    out[name] = work.loc[~drop].copy()
+                    work = work.loc[~drop].copy()
+            out[name] = work
 
     # Rulebook §1: Sync item line sums from detail tables into header tables
     detail_amount_cols = ("T.Tiền", "Thành tiền", "Amount", "Tiền bán", "Thanh tien", "ThanhTien")
@@ -421,7 +492,7 @@ def prepare_tables_for_question(
             d_orders = set(ddf[d_oid].dropna().unique())
             if len(d_orders.intersection(h_orders)) > 0.5 * len(d_orders):
                 line_col = next((c for c in detail_amount_cols if c in ddf.columns), None)
-                if line_col and "Tổng tiền hàng" not in hdf.columns:
+                if line_col and "Tổng tiền hàng" not in hdf.columns and "Tiền hàng trước giảm" not in hdf.columns:
                     line_sums = ddf.groupby(d_oid)[line_col].sum()
                     hdf["Tổng tiền hàng"] = hdf[h_oid].map(line_sums).fillna(0)
                     out[hname] = hdf
@@ -439,7 +510,7 @@ def prepare_tables_for_question(
                 if cname == hname or cdf.empty:
                     continue
                 c_id_col = next((c for c in cdf.columns if compact_identifier(c) in ("makh", "makhach", "makhachhang", "makhachmua", "customerid", "sokh", "makh")), None)
-                c_name_col = next((c for c in cdf.columns if compact_identifier(c) in ("tenkh", "tenkhach", "tenkhachhang", "customername", "hovaten")), None)
+                c_name_col = next((c for c in cdf.columns if compact_identifier(c) in ("tenkh", "tenkhach", "tenkhachhang", "customername", "hovaten", "kh", "khach", "khachhang", "khachlesi", "khachle") and c != c_id_col), None)
                 if c_id_col and c_name_col:
                     id_map = dict(zip(cdf[c_id_col], cdf[c_name_col]))
                     hdf["Tên khách hàng"] = hdf[cust_id_col].map(id_map).fillna(hdf[cust_id_col])
@@ -527,7 +598,7 @@ def patch_code_and_tables_for_rulebook(
     if not question or not code:
         return code, tables
 
-    qtext = normalize_text(question)
+    qtext = _normalize_question(question)
     needs_all = question_needs_all_statuses(question)
     patched = code
     exec_tables = tables
@@ -577,12 +648,15 @@ def patch_code_and_tables_for_rulebook(
 
     # Multi-line order deduplication for order count & cancellation rate
     is_order_counting = any(
-        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "ti le", "ty le", "% don", "so don", "ti le huy", "tỷ lệ hủy")
+        k in qtext for k in ("dem so don", "may don", "bao nhieu don", "so luong don", "may bill", "bao nhieu bill", "ti le", "ty le", "% don", "so don", "ti le huy", "tỷ lệ hủy")
     )
     if is_order_counting:
+        primary_oid = None
         for tname, df in exec_tables.items():
             oid = find_order_id_column(df)
             if oid is not None and df[oid].duplicated().any():
+                if primary_oid is None:
+                    primary_oid = oid
                 patched = re.sub(
                     rf"(\b{tname}\[[^\]]*\])\.shape\[0\]",
                     rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
@@ -609,6 +683,20 @@ def patch_code_and_tables_for_rulebook(
                     rf"\1.drop_duplicates(subset=['{oid}']).shape[0]",
                     patched,
                 )
+        # Also catch intermediate filtered DataFrame variables (e.g. result = len(df_q1) or df_q1.shape[0])
+        if primary_oid and ".nunique(" not in patched and ".drop_duplicates(" not in patched and not any(
+            w in qtext for w in ("mat hang", "san pham", "khach", "ngay", "dot")
+        ):
+            patched = re.sub(
+                r"result\s*=\s*len\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+                rf"result = (\1['{primary_oid}'].nunique() if isinstance(\1, pd.DataFrame) and '{primary_oid}' in \1.columns else len(\1))",
+                patched,
+            )
+            patched = re.sub(
+                r"result\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.shape\[0\]",
+                rf"result = (\1['{primary_oid}'].nunique() if isinstance(\1, pd.DataFrame) and '{primary_oid}' in \1.columns else \1.shape[0])",
+                patched,
+            )
 
     # Average Order Value (AOV) on multi-line tables:
     if question_is_average_order_value(question):
@@ -639,7 +727,7 @@ def patch_code_and_tables_for_rulebook(
         has_thanh_tien = any("Thành tiền" in df.columns for df in tables.values())
         if has_tong_tien and has_thanh_tien:
             patched = re.sub(
-                r"(merged|joined|merge_df|merged_df|df_merged)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
+                r"([A-Za-z0-9_]+(?:\[[^\]]*\])?)\[\s*['\"]Tổng tiền hàng['\"]\s*\]\.sum\(\)",
                 r"\1['Thành tiền'].sum()",
                 patched,
             )
@@ -647,33 +735,217 @@ def patch_code_and_tables_for_rulebook(
     # Date boundary guard: <= pd.Timestamp('YYYY-MM-DD') cut off timestamps on that day
     patched = _fix_date_boundaries(patched)
 
+    # Clamp non-leap year Feb 29 (e.g. 2025-02-29 -> 2025-02-28)
+    def _clamp_feb29(m):
+        yr = int(m.group(1))
+        sep = m.group("sep")
+        if yr % 4 != 0 or (yr % 100 == 0 and yr % 400 != 0):
+            return f"{yr}{sep}02{sep}28"
+        return m.group(0)
+    patched = re.sub(r"\b(20\d{2})(?P<sep>[/-])02(?P=sep)29\b", _clamp_feb29, patched)
+
+    # Delivery trips deduplication (Rulebook §6 VLXD: each delivery trip of an order counts as one trip)
+    if any(k in qtext for k in ("dot giao", "luot giao", "xe da giao", "chuyen giao")):
+        for tname, df in exec_tables.items():
+            trip_col = next((c for c in df.columns if compact_identifier(c) in ("luotgiao", "langiao", "dotgiao")), None)
+            oid = find_order_id_column(df)
+            if trip_col and oid:
+                patched = re.sub(
+                    rf"(\b{tname}(?:\[.+?\])?)\.shape\[0\]",
+                    rf"\1.drop_duplicates(subset=['{oid}', '{trip_col}']).shape[0]",
+                    patched,
+                )
+                patched = re.sub(
+                    rf"len\(\s*(\b{tname}(?:\[.+?\])?)\s*\)",
+                    rf"\1.drop_duplicates(subset=['{oid}', '{trip_col}']).shape[0]",
+                    patched,
+                )
+
+    # Rulebook §6 line 82: Size M, size L must end with (M) or (L), case-insensitive
+    if bool(re.search(r"\bsize\s*m\b", qtext)):
+        patched = re.sub(
+            r"\.str\.(?:contains|endswith)\(\s*['\"](?:\(?M\)?|\^?.*M.*)['\"]\s*(?:,\s*case\s*=\s*(?:False|True))?\s*\)",
+            lambda _: ".str.contains(r'\\(M\\)\\s*$', case=False, regex=True)",
+            patched,
+        )
+    if bool(re.search(r"\bsize\s*l\b", qtext)):
+        patched = re.sub(
+            r"\.str\.(?:contains|endswith)\(\s*['\"](?:\(?L\)?|\^?.*L.*)['\"]\s*(?:,\s*case\s*=\s*(?:False|True))?\s*\)",
+            lambda _: ".str.contains(r'\\(L\\)\\s*$', case=False, regex=True)",
+            patched,
+        )
+
+    # Rulebook §5 line 63: Drop cancelled import slips
+    if any(k in qtext for k in ("tien nhap hang", "tien nhap", "chi phi nhap", "tong tien hang nhap")):
+        for tname, df in exec_tables.items():
+            if any(w in compact_identifier(tname) for w in ("nhaphang", "phieunhap", "import")):
+                status_col = next((c for c in df.columns if any(w in compact_identifier(c) for w in ("trangthai", "tinhtrang", "status"))), None)
+                if status_col:
+                    patched = re.sub(
+                        rf"(\b{tname}\b)(?!\[~?\1\['{status_col}'\])",
+                        rf"(\1[~\1['{status_col}'].astype(str).str.lower().str.contains('huy|cancel', na=False)])",
+                        patched,
+                    )
+
+    # Rulebook §3: Protect against inner join on conversion tables dropping products without large units
+    for conv_token in ("quydoi", "quy_doi", "don_vi_sp", "donvisp", "danhmuc", "danh_muc"):
+        patched = re.sub(
+            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*how\s*=\s*['\"]inner['\"]",
+            r".merge(\1, how='left'",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*(?!how\s*=)",
+            r".merge(\1, how='left', ",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*\)",
+            r".merge(\1, how='left')",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*how\s*=\s*['\"]inner['\"]",
+            r"pd.merge(\1, \2, how='left'",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*(?!how\s*=)",
+            r"pd.merge(\1, \2, how='left', ",
+            patched,
+            flags=re.IGNORECASE,
+        )
+        patched = re.sub(
+            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*\)",
+            r"pd.merge(\1, \2, how='left')",
+            patched,
+            flags=re.IGNORECASE,
+        )
+
+    # Rulebook §3 lines 43-44: Non-converted items have ratio = 1 (fillna(1) on conversion ratios)
+    ratio_cols = ("Tỉ lệ quy đổi", "Ti le quy doi", "Hệ số", "He so", "he_so", "ti_le", "ty_le", "ratio", "Tỉ lệ")
+    for rcol in ratio_cols:
+        patched = re.sub(
+            rf"(\b[A-Za-z0-9_]*\[\s*['\"]{rcol}['\"]\s*\])(?!\s*\.fillna)",
+            rf"\1.fillna(1)",
+            patched,
+        )
+
+    # Rulebook §3 lines 43–44 & §5 line 71: Ensure base-unit quantity ('Số lượng quy đổi') is ready
+    has_sl_quy_doi = any("Số lượng quy đổi" in df.columns for df in exec_tables.values())
+
+    # Rulebook §3 lines 43–44: When ranking products (bán chạy nhất, hàng hot nhất), rank by QUANTITY sold unless revenue is specified
+    is_product_ranking = any(
+        k in qtext
+        for k in (
+            "ban chay", "chay nhat", "hot nhat", "ban nhieu nhat", "best seller",
+            "hang hot", "mon hot", "san pham hot"
+        )
+    ) and not any(k in qtext for k in ("doanh thu", "dthu", "tien", "revenue", "gia tri"))
+
+    if has_sl_quy_doi or is_product_ranking:
+        if exec_tables is tables:
+            exec_tables = {k: v.copy() for k, v in tables.items()}
+        for df in exec_tables.values():
+            if "Số lượng quy đổi" not in df.columns:
+                for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL", "Số lượng hàng", "soluonghang", "SoLuong", "SL lẻ", "Số lượng lẻ", "Quy ra ĐV lẻ", "Số lượng (ĐVT cơ bản)"):
+                    if raw_q in df.columns:
+                        df["Số lượng quy đổi"] = pd.to_numeric(df[raw_q], errors="coerce").fillna(0)
+                        break
+
+    if is_product_ranking:
+        for rev_col in ("Thành tiền", "ThanhTien", "Amount", "Tổng tiền", "TongTien", "tien_hang", "Tiền hàng"):
+            patched = re.sub(
+                rf"\.groupby\(([^)]*)\)\[\s*['\"]{rev_col}['\"]\s*\]\.sum\(\)",
+                r".groupby(\1)['Số lượng quy đổi'].sum()",
+                patched
+            )
+        for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL", "Số lượng hàng", "SoLuong"):
+            patched = patched.replace(f"['{raw_q}']", "['Số lượng quy đổi']").replace(
+                f'["{raw_q}"]', '["Số lượng quy đổi"]'
+            )
+
+    # Weighted Average for import price (Rulebook §5 line 65)
+    if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh", "don gia nhap")) and any(k in qtext for k in ("binh quan", "trung binh")):
+        for tname, df in exec_tables.items():
+            price_col = next((c for c in df.columns if compact_identifier(c) in ("dongia", "dongianhap", "gianhap")), None)
+            qty_col = next((c for c in df.columns if compact_identifier(c) in ("soluong", "sl", "slnhap", "soluongnhap")), None)
+            amt_col = next((c for c in df.columns if compact_identifier(c) in ("thanhtien", "cantrancc", "tonggiatrinhap")), None)
+            if price_col and qty_col:
+                if amt_col:
+                    patched = re.sub(
+                        rf"(\b{tname}(?:\[.+?\])?)\[\s*['\"]{price_col}['\"]\s*\]\.mean\(\)",
+                        rf"(\1['{amt_col}'].sum() / \1['{qty_col}'].sum())",
+                        patched,
+                    )
+                else:
+                    patched = re.sub(
+                        rf"(\b{tname}(?:\[.+?\])?)\[\s*['\"]{price_col}['\"]\s*\]\.mean\(\)",
+                        rf"((\1['{qty_col}'] * \1['{price_col}']).sum() / \1['{qty_col}'].sum())",
+                        patched,
+                    )
+
+    # Rulebook §3 lines 43–44 & §5 line 71: Redirect raw quantity ('Số lượng') to base-unit quantity ('Số lượng quy đổi')
+    # when ranking products, comparing price-change quantities, or summing base-unit quantities.
+    has_sl_quy_doi = any("Số lượng quy đổi" in df.columns for df in exec_tables.values())
+    if has_sl_quy_doi and "Tỉ lệ quy đổi" not in patched and "Hệ số" not in patched:
+        large_units: Set[str] = set()
+        for tname, df in exec_tables.items():
+            for col in df.columns:
+                if compact_identifier(col) in ("donviquydoi", "dvnhap", "dvlon", "donvilon", "dvtquydoi"):
+                    for u in df[col].dropna().astype(str).unique():
+                        u_norm = normalize_text(u)
+                        if u_norm:
+                            large_units.add(u_norm)
+        asks_large_unit = any(
+            bool(re.search(rf"\b(?:bao nhieu|may|so|tinh theo)\s+{re.escape(lu)}\b", qtext))
+            for lu in large_units
+        )
+        asks_base_qty = any(
+            k in qtext
+            for k in (
+                "ban chay", "chay nhat", "ban nhieu nhat", "hot nhat",
+                "tang gia", "doi gia", "len gia",
+                "ban duoc", "ban ra",
+            )
+        ) and not question_is_pure_revenue(question) and not is_order_counting
+        if asks_base_qty and not asks_large_unit:
+            if exec_tables is tables:
+                exec_tables = {k: v.copy() for k, v in tables.items()}
+            for df in exec_tables.values():
+                if "Số lượng quy đổi" not in df.columns:
+                    for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong", "SL"):
+                        if raw_q in df.columns:
+                            df["Số lượng quy đổi"] = df[raw_q]
+                            break
+            for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong"):
+                patched = patched.replace(f"['{raw_q}']", "['Số lượng quy đổi']").replace(
+                    f'["{raw_q}"]', '["Số lượng quy đổi"]'
+                )
+
     if question_is_pure_revenue(question):
-        has_injected_tong_tien_hang = any("Tổng tiền hàng" in df.columns for df in exec_tables.values())
-        if has_injected_tong_tien_hang:
-            for old_col in ("Tổng bill", "Tong tien", "Tổng đơn", "Thanh toán", "Tổng sau giảm giá"):
-                patched = patched.replace(f"['{old_col}']", "['Tổng tiền hàng']").replace(f'["{old_col}"]', '["Tổng tiền hàng"]')
-        has_tong_tien_hang = any(
-            "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns
-            for df in tables.values()
-        )
-        if has_tong_tien_hang:
-            patched = patched.replace("['Tổng sau giảm giá']", "['Tổng tiền hàng']")
-            patched = patched.replace('["Tổng sau giảm giá"]', '["Tổng tiền hàng"]')
-        has_tien_hang = any(
-            "Tien hang" in df.columns and "TongTien" in df.columns
-            for df in tables.values()
-        )
-        if has_tien_hang:
-            patched = patched.replace("['TongTien']", "['Tien hang']")
-            patched = patched.replace('["TongTien"]', '["Tien hang"]')
+        # 1. First priority: if tables have 'Tiền hàng trước giảm' (pre-discount gross revenue)
         has_tien_hang_truoc_giam = any(
-            "Tiền hàng trước giảm" in df.columns and any(c in df.columns for c in ("Tổng tiền", "TongTien", "Tổng sau giảm giá"))
-            for df in tables.values()
+            "Tiền hàng trước giảm" in df.columns for df in exec_tables.values()
         )
         if has_tien_hang_truoc_giam:
-            for bad in ("Tổng tiền", "TongTien", "Tổng sau giảm giá"):
-                patched = patched.replace(f"['{bad}']", "['Tiền hàng trước giảm']")
-                patched = patched.replace(f'["{bad}"]', '["Tiền hàng trước giảm"]')
+            for bad in ("Tong tien", "Tong_tien", "Tổng tiền", "TongTien", "Tổng sau giảm giá", "Tổng bill", "Thanh toán"):
+                patched = patched.replace(f"['{bad}']", "['Tiền hàng trước giảm']").replace(f'["{bad}"]', '["Tiền hàng trước giảm"]')
+        else:
+            # 2. Injected or existing 'Tổng tiền hàng'
+            has_injected_tong_tien_hang = any("Tổng tiền hàng" in df.columns for df in exec_tables.values())
+            if has_injected_tong_tien_hang:
+                for old_col in ("Tổng bill", "Tong tien", "Tong_tien", "Tổng đơn", "Thanh toán", "Tổng sau giảm giá", "Phải thu"):
+                    patched = patched.replace(f"['{old_col}']", "['Tổng tiền hàng']").replace(f'["{old_col}"]', '["Tổng tiền hàng"]')
+            # 3. 'Tien hang'
+            has_tien_hang = any("Tien hang" in df.columns for df in exec_tables.values())
+            if has_tien_hang:
+                for bad in ("TongTien", "Tong tien", "Tong_tien", "Tổng tiền", "Tổng sau giảm giá"):
+                    patched = patched.replace(f"['{bad}']", "['Tien hang']").replace(f'["{bad}"]', '["Tien hang"]')
 
     return patched, exec_tables
 
@@ -710,7 +982,11 @@ def format_accounting_context(
             notes.append(
                 f"- Table `{name}` status column `{scol}`: {status_desc}."
             )
-        if "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns:
+        if "Tiền hàng trước giảm" in df.columns and "Tong tien" in df.columns:
+            notes.append(
+                f"- Table `{name}`: Use `'Tiền hàng trước giảm'` for gross revenue (Rulebook §1); do NOT use `'Tong tien'` or `'Đã thu'`."
+            )
+        elif "Tổng tiền hàng" in df.columns and "Tổng sau giảm giá" in df.columns:
             notes.append(
                 f"- Table `{name}`: Use `'Tổng tiền hàng'` for revenue (Rulebook §1); do NOT use `'Tổng sau giảm giá'` or `'Khách đã trả'`."
             )
@@ -752,6 +1028,47 @@ def format_accounting_context(
         notes.append(
             "- Unit Conversion (Rulebook §3 & §10): Khi xếp hạng bán chạy hoặc tính tổng số lượng, phải quy đổi về đơn vị cơ bản bằng bảng quy đổi (`DanhSachQuyDoi` / `don_vi_sp`)."
         )
+
+    # Rulebook §5 Unsold goods guidance
+    qtext = normalize_text(question)
+    if any(k in qtext for k in ("khong ban duoc", "ko ban duoc", "ko ban dc", "hang e", "mat hang e", "mat hang bi e", "bi e", "ban ko dc", "e hang")):
+        notes.append(
+            "- Hàng ế trong kỳ (Rulebook §5 line 69): Là các mặt hàng ĐÃ TỪNG BÁN trước kỳ (có trong đơn hàng trước ngày bắt đầu kỳ) nhưng trong kỳ có số lượng bán = 0: `len(set(df[df[date_col] < start_date][prod_col]) - set(df[(df[date_col] >= start_date) & (df[date_col] < (end_date + pd.Timedelta(days=1)))][prod_col]))`. KHÔNG lấy từ danh mục hàng."
+        )
+
+    # Rulebook §5 Weighted average import price guidance
+    if any(k in qtext for k in ("gia nhap binh quan", "nhap vao gia binh quan", "gia nhap trung binh", "don gia nhap")):
+        notes.append(
+            "- Giá nhập bình quân một đơn vị (Rulebook §5 line 65): Phải tính bình quân gia quyền theo số lượng nhập của đơn vị đó: `(df['Số lượng'] * df['Đơn giá']).sum() / df['Số lượng'].sum()`. Chú ý: dùng cột 'Số lượng' (theo đơn vị được hỏi), KHÔNG chia cho 'Số lượng (ĐVT cơ bản)'. Làm tròn về đồng."
+        )
+
+    # Rulebook §4 line 58 Debt added & Debt paid guidance
+    if any(k in qtext for k in ("no them", "ghi no them", "mua chiu them", "tra no", "tra bot no", "thu no", "thu hoi no", "thu hoi cong no", "tra duoc", "mua chiu")):
+        notes.append(
+            "- Công nợ phát sinh và trả nợ trong kỳ (Rulebook §4 line 58):"
+            "\n  + Nợ thêm trong kỳ: Là phần chưa thanh toán lúc mua của các đơn ghi nợ/mua chịu phát sinh trong kỳ: `(Tổng đơn - Tiền trả lúc mua)` (hoặc cột `Còn nợ` của đơn nợ lúc lập). Không tính đơn đã hủy/trả hàng."
+            "\n  + Trả nợ / Thu nợ trong kỳ: Là tổng số tiền thu/trả nợ phát sinh trong kỳ trên Sổ quỹ / Phiếu thu / Thanh toán (chỉ tính tiền thu nợ cho các đơn nợ, không tính tiền khách trả ngay lúc mua)."
+            "\n  + Nếu câu hỏi yêu cầu ghi 2 số theo thứ tự: trả về danh sách 2 số `[nợ_thêm, trả_được]`."
+        )
+
+    # Rulebook §6 Blister/Pill even/odd inventory guidance
+    if any(k in qtext for k in ("vi chan", "le vien", "chan bao nhieu vi", "le bao nhieu vien")):
+        notes.append(
+            "- Tồn kho vỉ chẵn, viên lẻ (Rulebook §6): Tìm số viên trên mỗi vỉ trong quy cách đóng gói ở tên thuốc (ví dụ: 'hộp 10 vỉ x 8 viên' -> 8 viên/vỉ, '10 vỉ x 10 viên' -> 10 viên/vỉ). Số vỉ chẵn = tồn_kho // viên_mỗi_vỉ; số viên lẻ = tồn_kho % viên_mỗi_vỉ. Trả về danh sách 2 số: `[vỉ_chẵn, viên_lẻ]`."
+        )
+
+    # Rulebook §5 line 71 Price change comparison guidance
+    if any(k in qtext for k in ("tang gia", "doi gia", "len gia", "giam gia")) and any(k in qtext for k in ("ngay ke tu", "ngay truoc", "ngay lien truoc", "ngay ngay truoc")):
+        notes.append(
+            "- So sánh lượng bán trước/sau ngày đổi giá D trong N ngày (Rulebook §5 line 71): Khoảng sau là `[D, D + pd.Timedelta(days=N)]`; khoảng ngay trước là `[D - pd.Timedelta(days=N), D]`. % thay đổi = `(lượng_sau - lượng_trước) / lượng_trước * 100`. Tính theo đơn vị câu hỏi yêu cầu (viên, ly, con, lon...)."
+        )
+
+    # Rulebook §6 Active ingredient guidance
+    if any(k in qtext for k in ("hoat chat", "khe don", "thuoc ke don", "ke don")):
+        notes.append(
+            "- Hoạt chất & Thuốc kê đơn (Rulebook §6): Doanh thu theo hoạt chất là thuốc có hoạt chất khớp đúng như vậy trong danh mục thuốc. Thuốc phối hợp nhiều hoạt chất là một loại riêng, không tính vào từng hoạt chất riêng lẻ. Tỉ trọng (%): lấy doanh thu thuốc kê đơn chia cho tổng doanh thu toàn bộ (cùng loại doanh thu trước giảm và loại trừ đơn hủy/trả)."
+        )
+
     if not notes:
         return None
     return "ACCOUNTING & RULEBOOK COLUMN NOTES:\n" + "\n".join(notes)

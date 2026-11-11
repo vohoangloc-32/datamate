@@ -18,6 +18,7 @@ import unicodedata
 
 from .accounting_cleaner import (
     dedup_order_table_rows,
+    normalize_text,
     remove_subheader_and_subtotal_rows,
 )
 
@@ -149,7 +150,8 @@ def _is_order_id_column(name: str) -> bool:
             "madon", "mahd", "sohd", "mahoadon", "sohoadon",
             "orderid", "orderno", "ordernumber", "machungtu",
             "sochungtu", "soct", "madh", "sodon", "mabill",
-            "sophieu", "maphieu", "magd",
+            "sophieu", "maphieu", "magd", "magiaodich", "manhaphang",
+            "manhap", "madonnhap", "phieunhap", "donnhap", "madonhang",
         )
     )
 
@@ -196,7 +198,7 @@ def _fill_merged_order_metadata(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
+def _coerce_date_column(values: pd.Series, default_year: Optional[int] = None) -> Optional[pd.Series]:
     """Parse date-like columns, including mixed Excel serial-day and text dates."""
     if pd.api.types.is_datetime64_any_dtype(values):
         return values
@@ -232,6 +234,21 @@ def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
         is_bare_year = date_text.str.match(r"^\d{4}$", na=False)
         date_text_to_parse = date_text[~is_bare_year]
         if not date_text_to_parse.empty:
+            # Rulebook §8, line 113: Supply sheet year or modal year for bare DD/MM dates
+            target_year = default_year
+            if target_year is None:
+                yr_extract = values.astype(str).str.extract(r"\b(20\d{2})\b")[0].dropna()
+                if not yr_extract.empty:
+                    target_year = int(yr_extract.mode()[0])
+                elif excel_mask.any() and not result.dropna().empty:
+                    target_year = int(result.dropna().dt.year.mode()[0])
+            if target_year is not None:
+                date_text_to_parse = date_text_to_parse.str.replace(
+                    r"^\s*(\d{1,2})[/-](\d{1,2})\s*$",
+                    rf"\1/\2/{target_year}",
+                    regex=True,
+                )
+
             date_text_to_parse = date_text_to_parse.str.replace(
                 r"(?i)\bth(?:áng|g)\.?\s*",
                 "/",
@@ -256,6 +273,9 @@ def _coerce_date_column(values: pd.Series) -> Optional[pd.Series]:
                 )
                 parsed_text.loc[iso_dates] = parsed_iso
 
+            # Clamp to plausible calendar years to avoid OutOfBoundsDatetime (e.g. year 1 AD)
+            valid_year_mask = parsed_text.dt.year.between(1950, 2100)
+            parsed_text.loc[~valid_year_mask] = pd.NaT
             result.loc[date_text_to_parse.index] = parsed_text
 
     valid_dates = result.dropna()
@@ -282,11 +302,11 @@ def _detect_encoding(filepath: str) -> str:
     return "utf-8"
 
 
-def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
+def _coerce_types(df: pd.DataFrame, default_year: Optional[int] = None) -> pd.DataFrame:
     """Try to coerce object/string columns to numeric or datetime where appropriate."""
     for col in df.columns:
         if _is_date_column(col):
-            parsed_dates = _coerce_date_column(df[col])
+            parsed_dates = _coerce_date_column(df[col], default_year=default_year)
             if parsed_dates is not None:
                 df[col] = parsed_dates
                 continue
@@ -298,7 +318,7 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
 
             # 1. Try direct numeric
             numeric = pd.to_numeric(df[col], errors="coerce")
-            if numeric.notna().sum() > 0.6 * len(non_null):
+            if numeric.notna().sum() > 0.9 * len(non_null):
                 df[col] = numeric
                 continue
 
@@ -326,10 +346,10 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
                     df[col] = pd.to_numeric(full_parsed, errors="coerce")
                     continue
 
-            # 2c. Try Quantity with unit string parsing (e.g. '1 chai', '2 ly', '10 hop')
+            # 2c. Try Quantity with unit string parsing (e.g. '1 chai', '2 ly', '10 hop', '1 hộp 30', '2 bao 25kg')
             compact_c = _compact_col_name(col)
             if any(t in compact_c for t in ("soluong", "sl", "qty", "quantity")) and not any(t in compact_c for t in ("ma", "id", "ten")):
-                _qty_re = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s+[a-zA-ZÀ-ỹ]+\s*$")
+                _qty_re = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s+[a-zA-Z0-9À-ỹ\s/.-]+$")
                 sample_qty = non_null.head(30).astype(str)
                 if any(_qty_re.match(v) for v in sample_qty):
                     def _extract_qty(val: object) -> object:
@@ -365,8 +385,25 @@ def _coerce_types(df: pd.DataFrame) -> pd.DataFrame:
                         years = valid_dt.dt.year
                         if (years >= 2000).mean() > 0.8 and (years <= 2050).mean() > 0.8:
                             df[col] = dt
+                            continue
                 except Exception:
                     pass
+
+            # 4. If column remains string/object: clean whitespace and harmonize casing
+            mask = df[col].notna() & df[col].map(lambda x: isinstance(x, str))
+            if mask.any():
+                df.loc[mask, col] = (
+                    df.loc[mask, col]
+                    .astype(str)
+                    .str.replace(r"\s+", " ", regex=True)
+                    .str.strip()
+                )
+                s_non_null = df.loc[mask, col]
+                if 0 < s_non_null.str.casefold().nunique() < s_non_null.nunique() <= 1000:
+                    mode_map = {}
+                    for lower_val, grp in s_non_null.groupby(s_non_null.str.casefold()):
+                        mode_map[lower_val] = grp.value_counts().index[0]
+                    df.loc[mask, col] = s_non_null.str.casefold().map(mode_map)
     return df
 
 
@@ -466,8 +503,8 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
                     for c, v in zip(df.columns, row0):
                         v_str = str(v).strip() if pd.notna(v) else ""
                         c_str = str(c).strip()
-                        c_lower = unicodedata.normalize("NFKD", c_str.casefold()).strip()
-                        if v_str and (c_str.startswith("Unnamed:") or c_lower in {"hang", "don", "tien"}):
+                        c_compact = _compact_col_name(c_str)
+                        if v_str and (c_str.startswith("Unnamed:") or c_compact in {"hang", "don", "tien"}):
                             clean_v = _normalize_col_name(v_str)
                             new_cols.append(clean_v)
                             if c_str.startswith("Unnamed:"):
@@ -483,7 +520,9 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
 
             df = remove_subheader_and_subtotal_rows(df)
             df = _fill_merged_order_metadata(df)
-            df = _coerce_types(df)
+            month = _monthly_sheet_period(sheet)
+            default_year = int(month.split("-")[0]) if month else None
+            df = _coerce_types(df, default_year=default_year)
             df = dedup_order_table_rows(df)
             # Use file_stem__sheet_name as key if multiple sheets
             key = f"{stem}__{sheet}" if len(xls.sheet_names) > 1 else stem
@@ -491,7 +530,6 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
             if raw_stem != stem:
                 raw_key = f"{raw_stem}__{sheet}" if len(xls.sheet_names) > 1 else raw_stem
                 result[raw_key] = df
-            month = _monthly_sheet_period(sheet)
             if month is not None:
                 monthly_sheets.append((sheet, month, df))
             logger.info("Loaded XLSX sheet '%s' from %s: %d rows × %d cols",
@@ -607,11 +645,245 @@ def _combine_split_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataF
                 combined_df = pd.concat([t[1] for t in table_list], ignore_index=True)
                 if is_monthly:
                     comb_name = f"{base_prefix}__monthly_combined"
+                    for part_name, _ in table_list:
+                        tables.pop(part_name, None)
+                    tables[comb_name] = combined_df
                 else:
                     comb_name = f"{base_prefix}__combined"
-                tables[comb_name] = combined_df
-                if base_prefix not in tables:
-                    tables[base_prefix] = combined_df
+                    tables[comb_name] = combined_df
+                    if base_prefix not in tables:
+                        tables[base_prefix] = combined_df
+    return tables
+
+
+def _bridge_relational_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """Relational denormalization & dimension/temporal bridging across tables."""
+    table_items = list(tables.items())
+
+    # Pass 1: FK aliasing across tables
+    for name_a, df_a in table_items:
+        if df_a.empty:
+            continue
+        id_cols_a = [c for c in df_a.columns if _is_order_id_column(c)]
+        for name_b, df_b in table_items:
+            if df_a is df_b or name_a >= name_b or df_b.empty:
+                continue
+            id_cols_b = [c for c in df_b.columns if _is_order_id_column(c)]
+            for ida in id_cols_a:
+                set_a = set(df_a[ida].dropna().astype(str))
+                if len(set_a) < 2:
+                    continue
+                for idb in id_cols_b:
+                    if ida == idb:
+                        continue
+                    set_b = set(df_b[idb].dropna().astype(str))
+                    if len(set_b) < 2:
+                        continue
+                    overlap = len(set_a & set_b)
+                    if overlap >= 2 and (overlap / min(len(set_a), len(set_b))) >= 0.5:
+                        if idb not in df_a.columns:
+                            df_a[idb] = df_a[ida]
+                        if ida not in df_b.columns:
+                            df_b[ida] = df_b[idb]
+
+    # Pass 2: Temporal propagation (Order/Invoice/Import Header -> Detail)
+    for name_a, df_a in table_items:
+        if df_a.empty:
+            continue
+        order_ids_a = [c for c in df_a.columns if _is_order_id_column(c)]
+        date_cols_a = [
+            c for c in df_a.columns
+            if _is_date_column(c) and pd.api.types.is_datetime64_any_dtype(df_a[c])
+        ]
+        if not order_ids_a or not date_cols_a:
+            continue
+
+        for name_b, df_b in table_items:
+            if df_a is df_b or name_a == name_b or df_b.empty:
+                continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+                continue
+            date_cols_b = [
+                c for c in df_b.columns
+                if _is_date_column(c) and pd.api.types.is_datetime64_any_dtype(df_b[c])
+            ]
+            if date_cols_b:
+                continue
+
+            for oid in order_ids_a:
+                if oid in df_b.columns:
+                    set_a = set(df_a[oid].dropna().astype(str))
+                    set_b = set(df_b[oid].dropna().astype(str))
+                    if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                        for dcol in date_cols_a:
+                            if dcol not in df_b.columns:
+                                mapping = (
+                                    df_a.dropna(subset=[oid, dcol])
+                                    .drop_duplicates(subset=[oid])
+                                    .set_index(oid)[dcol]
+                                )
+                                df_b[dcol] = df_b[oid].map(mapping)
+
+    # Pass 3: Product Dimension propagation (Catalog -> Detail/Secondary)
+    sku_tokens = ("sku", "mahang", "masp", "mathuoc", "mahh")
+    name_tokens = ("tensp", "tenhang", "tenthuoc", "tensanpham", "tenhh")
+    hoat_chat_tokens = ("hoatchat", "activeingredient", "hoatchatchinh", "thanhphanchinh")
+    ke_don_tokens = ("kedon", "thuocketheodon", "thuockedon", "bantheodon", "prescription", "theodon")
+    nhom_hang_tokens = ("nhomhang", "danhmuc", "category", "nhomsanpham", "maloaihang", "tenloaihang", "loaihang")
+    dvt_tokens = ("donvitinh", "dvt", "unit")
+
+    for name_a, df_a in table_items:
+        if df_a.empty:
+            continue
+        sku_cols_a = [c for c in df_a.columns if any(k in _compact_col_name(c) for k in sku_tokens)]
+        name_cols_a = [c for c in df_a.columns if any(k in _compact_col_name(c) for k in name_tokens)]
+        dim_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in (name_tokens + hoat_chat_tokens + ke_don_tokens + nhom_hang_tokens + dvt_tokens))
+        ]
+        if not dim_cols_a or (not sku_cols_a and not name_cols_a):
+            continue
+
+        for name_b, df_b in table_items:
+            if df_a is df_b or name_a == name_b or df_b.empty:
+                continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+                continue
+
+            join_pairs = []
+            for sa in sku_cols_a:
+                for sb in [c for c in df_b.columns if any(k in _compact_col_name(c) for k in sku_tokens)]:
+                    join_pairs.append((sa, sb))
+            if not join_pairs:
+                for na in name_cols_a:
+                    for nb in [c for c in df_b.columns if any(k in _compact_col_name(c) for k in name_tokens)]:
+                        join_pairs.append((na, nb))
+
+            for key_a, key_b in join_pairs:
+                set_a = set(df_a[key_a].dropna().astype(str))
+                set_b = set(df_b[key_b].dropna().astype(str))
+                if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                    for dcol in dim_cols_a:
+                        if dcol != key_a and dcol not in df_b.columns:
+                            mapping = (
+                                df_a.dropna(subset=[key_a, dcol])
+                                .drop_duplicates(subset=[key_a])
+                                .set_index(key_a)[dcol]
+                            )
+                            mapped_series = df_b[key_b].map(mapping)
+                            if any(k in _compact_col_name(dcol) for k in ke_don_tokens):
+                                mapped_series = mapped_series.fillna(False)
+                            df_b[dcol] = mapped_series
+
+    # Pass 4: Customer dimension propagation (Customer Catalog -> Orders/Invoices)
+    cust_id_tokens = ("makh", "makhach", "customerid", "makhachhang")
+    cust_dim_tokens = ("tenkh", "tenkhach", "khachhangten", "customername", "nhomkhach", "nhomkh", "loaihinhkhach")
+    for name_a, df_a in table_items:
+        if df_a.empty:
+            continue
+        cust_id_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in cust_id_tokens)
+        ]
+        cust_dim_cols_a = [
+            c for c in df_a.columns
+            if any(k in _compact_col_name(c) for k in cust_dim_tokens)
+        ]
+        if not cust_id_cols_a or not cust_dim_cols_a:
+            continue
+
+        for name_b, df_b in table_items:
+            if df_a is df_b or name_a == name_b or df_b.empty:
+                continue
+            if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+                continue
+
+            cust_id_cols_b = [
+                c for c in df_b.columns
+                if any(k in _compact_col_name(c) for k in cust_id_tokens)
+            ]
+            for cida in cust_id_cols_a:
+                for cidb in cust_id_cols_b:
+                    set_a = set(df_a[cida].dropna().astype(str))
+                    set_b = set(df_b[cidb].dropna().astype(str))
+                    if len(set_a & set_b) >= 2 and (len(set_a & set_b) / max(1, len(set_b))) >= 0.5:
+                        if cida not in df_b.columns:
+                            df_b[cida] = df_b[cidb]
+                        if cidb not in df_a.columns:
+                            df_a[cidb] = df_a[cida]
+                        for cdim in cust_dim_cols_a:
+                            if cdim not in df_b.columns:
+                                mapping = (
+                                    df_a.dropna(subset=[cida, cdim])
+                                    .drop_duplicates(subset=[cida])
+                                    .set_index(cida)[cdim]
+                                )
+                                df_b[cdim] = df_b[cidb].map(mapping)
+
+    # Pass 5: Pre-compute 'Số lượng quy đổi' (base-unit quantity) from unit conversion tables (Rulebook §3 & §6)
+    ratio_tokens = ("tilequydoi", "heso", "hesoqd", "hesoquydoi", "tylequydoi")
+    large_unit_tokens = ("donviquydoi", "dvnhap", "dvlon", "donvilon", "dvtquydoi", "donvitinh", "dvt", "donvi")
+    prod_key_tokens = ("tensanpham", "tenhang", "tenmon", "hang", "tenhh", "tenhanghoa", "masp", "mahang", "masku", "sku", "mahanghoa")
+    conv_map: Dict[Tuple[str, str], float] = {}
+    for name_a, df_a in table_items:
+        if df_a.empty:
+            continue
+        r_col = next((c for c in df_a.columns if _compact_col_name(c) in ratio_tokens), None)
+        u_col = next((c for c in df_a.columns if _compact_col_name(c) in large_unit_tokens and c != r_col), None)
+        p_cols = [c for c in df_a.columns if _compact_col_name(c) in prod_key_tokens]
+        if r_col and u_col and p_cols:
+            for p_col in p_cols:
+                sub = df_a[[p_col, u_col, r_col]].dropna()
+                for p_val, u_val, r_val in zip(sub[p_col], sub[u_col], sub[r_col]):
+                    try:
+                        f_val = float(r_val)
+                        if f_val > 0:
+                            conv_map[(normalize_text(p_val), normalize_text(u_val))] = f_val
+                    except (ValueError, TypeError):
+                        pass
+
+    # Alias existing base-unit quantity columns into 'Số lượng quy đổi'
+    base_qty_aliases = (
+        "SLQuyDoi", "SL quy đổi", "Số lượng lẻ", "SL lẻ",
+        "Quy ra ĐV lẻ", "Số lượng (ĐVT cơ bản)", "SL quy ra lẻ",
+        "SL cơ bản", "sl_co_ban", "SL co ban",
+    )
+    for name_b, df_b in table_items:
+        if df_b.empty:
+            continue
+        if "Số lượng quy đổi" not in df_b.columns:
+            for b_alias in base_qty_aliases:
+                if b_alias in df_b.columns:
+                    df_b["Số lượng quy đổi"] = pd.to_numeric(df_b[b_alias], errors="coerce").fillna(0)
+                    break
+
+    qty_col_candidates = (
+        "Số lượng", "Số lượng sản phẩm", "so_luong", "SL",
+        "Số lượng hàng", "soluonghang", "SoLuong", "so_luong_hang",
+    )
+    unit_col_candidates = ("ĐVT", "Đơn vị tính", "Đơn vị", "Unit", "dvt", "don_vi_tinh", "DonVi", "donvi")
+    for name_b, df_b in table_items:
+        if df_b.empty or "Số lượng quy đổi" in df_b.columns:
+            continue
+        if _compact_col_name(name_b) in ("danhsachquydoi", "banhangdonviquydoi", "danhsachdonvitinh", "donvisp", "danhmuc"):
+            continue
+        q_col = next((c for c in qty_col_candidates if c in df_b.columns), None)
+        u_col = next((c for c in unit_col_candidates if c in df_b.columns), None)
+        p_cols_b = [c for c in df_b.columns if _compact_col_name(c) in prod_key_tokens]
+        if q_col:
+            q_num = pd.to_numeric(df_b[q_col], errors="coerce")
+            if conv_map and u_col and p_cols_b:
+                p_col_b = p_cols_b[0]
+                p_norm = df_b[p_col_b].fillna("").astype(str).map(normalize_text)
+                u_norm = df_b[u_col].fillna("").astype(str).map(normalize_text)
+                factors = [
+                    conv_map.get((p, u), 1.0)
+                    for p, u in zip(p_norm, u_norm)
+                ]
+                df_b["Số lượng quy đổi"] = q_num * pd.Series(factors, index=df_b.index)
+            else:
+                df_b["Số lượng quy đổi"] = q_num
+
     return tables
 
 
@@ -663,7 +935,46 @@ def load_business_data(business_dir: str, use_cache: bool = True) -> Dict[str, p
     if not tables:
         logger.warning("No data tables loaded from %s", business_dir)
     else:
+        # Check README.md for unit conversions if no conversion table exists
+        readme_file = data_dir / "README.md"
+        if readme_file.exists():
+            try:
+                content = readme_file.read_text(encoding="utf-8", errors="ignore")
+                has_conv_table = any(
+                    "quydoi" in _compact_col_name(tname)
+                    for tname in tables
+                )
+                has_sl_col = any(
+                    any(_compact_col_name(c) in ("soluongquydoi", "slquydoi", "slle", "soluongle") for c in df.columns)
+                    for df in tables.values()
+                )
+                if not has_conv_table and not has_sl_col:
+                    matches = re.findall(
+                        r"-\s+([^:\n]+):\s*1\s+([^=\n]+)\s*=\s*(\d+(?:[.,]\d+)?)\s*([^\n\r]+)",
+                        content,
+                    )
+                    if matches:
+                        rows = []
+                        for p_name, u_from, ratio_str, u_to in matches:
+                            ratio_val = float(ratio_str.replace(",", "."))
+                            if ratio_val.is_integer():
+                                ratio_val = int(ratio_val)
+                            rows.append({
+                                "Tên sản phẩm": p_name.strip(),
+                                "Tên hàng": p_name.strip(),
+                                "Đơn vị quy đổi": u_from.strip(),
+                                "Tỉ lệ quy đổi": ratio_val,
+                                "Đơn vị cơ bản": u_to.strip(),
+                            })
+                        df_conv = pd.DataFrame(rows)
+                        df_conv = _coerce_types(df_conv)
+                        tables["DanhSachQuyDoi"] = df_conv
+                        tables["danh_sach_quy_doi"] = df_conv
+            except Exception as e:
+                logger.warning("Failed to parse conversion from README.md: %s", e)
+
         tables = _combine_split_tables(tables)
+        tables = _bridge_relational_tables(tables)
 
     if use_cache:
         _cache[business_dir] = tables
