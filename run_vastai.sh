@@ -52,7 +52,7 @@ fi
 # 3. Dependencies & Unit Tests
 echo "🔧 Installing requirements and verifying test suite..."
 pip uninstall -y torchaudio 2>/dev/null || true
-pip install -q vllm openpyxl xlrd tabulate pytest huggingface_hub pandas hf-transfer
+pip install -q vllm openpyxl xlrd tabulate pytest huggingface_hub pandas hf-transfer accelerate
 pytest tests/ -q
 
 # 4. Download model weights directly from Hugging Face
