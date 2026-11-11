@@ -23,6 +23,13 @@ import pandas as pd
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Patch transformers to prevent torchaudio CUDA mismatch RuntimeError on custom environments
+try:
+    import transformers.utils.import_utils as _t_iu
+    _t_iu.is_torchaudio_available = lambda: False
+except Exception:
+    pass
+
 from modules.data_loader import load_business_data, clear_cache
 from modules.schema_registry import SchemaRegistry
 from modules.readme_parser import parse_readme
@@ -100,6 +107,13 @@ def create_llm_generate_fn(model_dir: str, device: str = "cuda") -> Callable[[st
         Function that takes a prompt and returns the generated text.
     """
     try:
+        # Ensure torchaudio check is disabled even if transformers is reloaded
+        try:
+            import transformers.utils.import_utils as _t_iu
+            _t_iu.is_torchaudio_available = lambda: False
+        except Exception:
+            pass
+
         from vllm import LLM, SamplingParams  # type: ignore  # optional dependency
 
         # Number of GPUs used for tensor parallelism. A 3B model fits on a single
