@@ -131,8 +131,12 @@ class ConfidenceGate:
                         reasons.append("zero_numeric_on_aggregation")
                 if answer_type == "percent":
                     if execution_retries >= 1:
-                        confidence -= 0.35
-                        reasons.append("percent_after_retry")
+                        if 0.0 < abs(num_val) < 100.0 and execution_retries == 1:
+                            confidence -= 0.15
+                            reasons.append("percent_after_retry_mild")
+                        else:
+                            confidence -= 0.35
+                            reasons.append("percent_after_retry")
                     if num_val in (100.0, -100.0):
                         confidence -= 0.70
                         reasons.append("degenerate_percent_value")

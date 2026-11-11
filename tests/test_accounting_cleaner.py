@@ -283,11 +283,11 @@ def test_confidence_gate_abstains_on_high_risk_percent_and_retries():
     )
     assert res_deg["type"] == "abstain"
 
-    # Percent after execution retries -> abstain (flaky code execution)
+    # Percent after multiple execution retries -> abstain (flaky code execution)
     res_retry = gate.evaluate(
         {"type": "percent", "answer": 1.35},
         question_info=q_info,
-        execution_retries=1,
+        execution_retries=2,
         question="Tháng 5/2025 tỉ lệ đơn bị huỷ là bao nhiêu %?",
     )
     assert res_retry["type"] == "abstain"

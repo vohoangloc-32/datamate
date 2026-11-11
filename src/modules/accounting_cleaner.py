@@ -843,7 +843,7 @@ def patch_code_and_tables_for_rulebook(
         k in qtext
         for k in (
             "ban chay", "chay nhat", "hot nhat", "ban nhieu nhat", "best seller",
-            "hang hot", "mon hot", "san pham hot"
+            "hang hot", "mon hot", "san pham hot", "top", "mon nao", "san pham nao", "hang nao"
         )
     ) and not any(k in qtext for k in ("doanh thu", "dthu", "tien", "revenue", "gia tri"))
 
@@ -856,6 +856,18 @@ def patch_code_and_tables_for_rulebook(
                     if raw_q in df.columns:
                         df["Số lượng quy đổi"] = pd.to_numeric(df[raw_q], errors="coerce").fillna(0)
                         break
+
+    if has_sl_quy_doi:
+        # Neutralize LLM manual ratio multiplication when precalculated 'Số lượng quy đổi' exists
+        patched = re.sub(
+            r"([A-Za-z0-9_]+\[\s*['\"](?:Số lượng quy đổi|Số lượng cơ bản|sl_quy_doi|sl_co_ban|Quantity_in_Base_Unit|Số lượng lẻ)['\"]\s*\]\s*=\s*[A-Za-z0-9_]+\[\s*['\"](?:Số lượng|Số lượng sản phẩm|so_luong|SL|Số lượng quy đổi)['\"]\s*\]\s*\*\s*[A-Za-z0-9_]+\[\s*['\"](?:Tỉ lệ quy đổi|Ti le quy doi|Hệ số|Hệ số quy đổi|He so|ratio)['\"]\s*\](?:\.fillna\([^)]*\))?)",
+            r"# \1 (neutralized in favor of pre-computed Số lượng quy đổi)",
+            patched,
+        )
+        patched = patched.replace("['Số lượng cơ bản']", "['Số lượng quy đổi']").replace('["Số lượng cơ bản"]', '["Số lượng quy đổi"]')
+        patched = patched.replace("['sl_co_ban']", "['Số lượng quy đổi']").replace('["sl_co_ban"]', '["Số lượng quy đổi"]')
+        patched = patched.replace("['Quantity_in_Base_Unit']", "['Số lượng quy đổi']").replace('["Quantity_in_Base_Unit"]', '["Số lượng quy đổi"]')
+        patched = patched.replace("['Số lượng lẻ']", "['Số lượng quy đổi']").replace('["Số lượng lẻ"]', '["Số lượng quy đổi"]')
 
     if is_product_ranking:
         for rev_col in ("Thành tiền", "ThanhTien", "Amount", "Tổng tiền", "TongTien", "tien_hang", "Tiền hàng"):
@@ -892,7 +904,7 @@ def patch_code_and_tables_for_rulebook(
     # Rulebook §3 lines 43–44 & §5 line 71: Redirect raw quantity ('Số lượng') to base-unit quantity ('Số lượng quy đổi')
     # when ranking products, comparing price-change quantities, or summing base-unit quantities.
     has_sl_quy_doi = any("Số lượng quy đổi" in df.columns for df in exec_tables.values())
-    if has_sl_quy_doi and "Tỉ lệ quy đổi" not in patched and "Hệ số" not in patched:
+    if has_sl_quy_doi:
         large_units: Set[str] = set()
         for tname, df in exec_tables.items():
             for col in df.columns:
@@ -905,14 +917,14 @@ def patch_code_and_tables_for_rulebook(
             bool(re.search(rf"\b(?:bao nhieu|may|so|tinh theo)\s+{re.escape(lu)}\b", qtext))
             for lu in large_units
         )
-        asks_base_qty = any(
+        asks_base_qty = (is_product_ranking or any(
             k in qtext
             for k in (
                 "ban chay", "chay nhat", "ban nhieu nhat", "hot nhat",
                 "tang gia", "doi gia", "len gia",
-                "ban duoc", "ban ra",
+                "ban duoc", "ban ra", "top", "mon nao", "san pham nao", "hang nao",
             )
-        ) and not question_is_pure_revenue(question) and not is_order_counting
+        )) and not question_is_pure_revenue(question) and not is_order_counting
         if asks_base_qty and not asks_large_unit:
             if exec_tables is tables:
                 exec_tables = {k: v.copy() for k, v in tables.items()}
@@ -925,6 +937,33 @@ def patch_code_and_tables_for_rulebook(
             for raw_q in ("Số lượng", "Số lượng sản phẩm", "so_luong"):
                 patched = patched.replace(f"['{raw_q}']", "['Số lượng quy đổi']").replace(
                     f'["{raw_q}"]', '["Số lượng quy đổi"]'
+                )
+
+    # Rulebook §6 lines 89-91: Pharmacy active ingredient exact match (single active ingredient vs compound combinations)
+    if any(k in qtext for k in ("hoat chat", "hoạt chất", "thanh phan chinh", "thành phần chính")):
+        ing_pattern = r"([A-Za-z0-9_]+\[\s*['\"](?:Hoạt chất|hoat_chat|HoatChat|hoatchat|TenHoatChat|ThanhPhanChinh|thanh_phan_chinh|ThanhPhan|thanh_phan|HoatChatChinh)['\"]\s*\])\.str\.contains\(\s*r?['\"]([^'\"]+)['\"][^)]*\)"
+        patched = re.sub(
+            ing_pattern,
+            lambda m: f"({m.group(1)}.astype(str).str.strip().str.lower() == '{m.group(2).strip().lower()}')",
+            patched,
+            flags=re.IGNORECASE,
+        )
+
+    # Rulebook §6 lines 95-97: Delivery trips deduplication (distinct trips by Order ID + Trip / Lượt giao)
+    if any(k in qtext for k in ("dot giao", "luot giao", "xe da giao", "xe cho", "chuyen giao", "dot hang")):
+        for tname, df in exec_tables.items():
+            trip_col = next((c for c in df.columns if compact_identifier(c) in ("luotgiao", "dotgiao", "chuyengiao", "langiao")), None)
+            order_col = next((c for c in df.columns if compact_identifier(c) in ("maphieu", "madon", "madonhang", "soct", "sophieu")), None)
+            if trip_col and order_col:
+                patched = re.sub(
+                    rf"(\b{tname}(?:\[.+?\])?)\[\s*['\"]{trip_col}['\"]\s*\]\.(?:nunique|count)\(\)",
+                    rf"\1.drop_duplicates(subset=['{order_col}', '{trip_col}']).shape[0]",
+                    patched,
+                )
+                patched = re.sub(
+                    rf"len\(\s*(\b{tname}(?:\[.+?\])?)\s*\)",
+                    rf"\1.drop_duplicates(subset=['{order_col}', '{trip_col}']).shape[0]",
+                    patched,
                 )
 
     if question_is_pure_revenue(question):

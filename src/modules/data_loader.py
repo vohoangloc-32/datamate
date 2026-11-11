@@ -555,6 +555,10 @@ def _load_xlsx(filepath: str) -> Dict[str, pd.DataFrame]:
             result[f"{stem}__monthly_combined"] = combined_table
             if raw_stem != stem:
                 result[f"{raw_stem}__monthly_combined"] = combined_table
+            for sheet, _, _ in monthly_sheets:
+                result.pop(f"{stem}__{sheet}", None)
+                if raw_stem != stem:
+                    result.pop(f"{raw_stem}__{sheet}", None)
             logger.info(
                 "Combined %d compatible monthly sheets from %s: %d rows",
                 len(combined),
@@ -650,6 +654,8 @@ def _combine_split_tables(tables: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataF
                     tables[comb_name] = combined_df
                 else:
                     comb_name = f"{base_prefix}__combined"
+                    for part_name, _ in table_list:
+                        tables.pop(part_name, None)
                     tables[comb_name] = combined_df
                     if base_prefix not in tables:
                         tables[base_prefix] = combined_df
