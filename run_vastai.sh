@@ -31,18 +31,27 @@ echo "📦 Checking Git repository..."
 REPO_URL="https://github.com/vohoangloc-32/datamate.git"
 BRANCH="loc"
 
-if [ ! -d ".git" ]; then
-    echo "Cloning repository with --depth 1..."
-    git clone --depth 1 -b "$BRANCH" "$REPO_URL" .
-else
+if [ -d "datamate/.git" ]; then
+    echo "Switching to datamate directory and updating..."
+    cd datamate
+    git fetch origin "$BRANCH" --depth 1
+    git checkout "$BRANCH"
+    git reset --hard "origin/$BRANCH"
+elif [ -d ".git" ]; then
     echo "Updating latest code from branch $BRANCH..."
     git fetch origin "$BRANCH" --depth 1
     git checkout "$BRANCH"
     git reset --hard "origin/$BRANCH"
+else
+    echo "Cloning repository into datamate directory..."
+    rm -rf datamate
+    git clone --depth 1 -b "$BRANCH" "$REPO_URL" datamate
+    cd datamate
 fi
 
 # 3. Dependencies & Unit Tests
 echo "🔧 Installing requirements and verifying test suite..."
+pip uninstall -y torchaudio 2>/dev/null || true
 pip install -q vllm openpyxl xlrd tabulate pytest huggingface_hub pandas hf-transfer
 pytest tests/ -q
 
