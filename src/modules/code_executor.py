@@ -374,8 +374,13 @@ class CodeExecutor:
             try:
                 with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                     exec(exec_code, exec_globals)
-            except Exception:
+            except Exception as patch_exc:
                 if exec_code != code or exec_tables is not tables:
+                    logger.warning(
+                        "Patched code execution failed (%s: %s). Falling back to raw unpatched code.",
+                        type(patch_exc).__name__,
+                        patch_exc,
+                    )
                     stdout_capture = io.StringIO()
                     stderr_capture = io.StringIO()
                     exec_globals = _create_safe_globals(tables, as_of_date)
@@ -396,13 +401,28 @@ class CodeExecutor:
             raw_res = exec_globals.get("result", None)
             if question and question_is_average_order_value(question):
                 raw_res = round_half_up_vnd(raw_res)
-            # Unpack (label, val) items when list is returned as dict.items()
+            # Unpack (label, val) items when list is returned as dict.items() or 2D list
             if (
                 isinstance(raw_res, (list, tuple))
                 and len(raw_res) > 0
                 and all(isinstance(x, (tuple, list)) and len(x) == 2 for x in raw_res)
             ):
-                if any(isinstance(x[1], (int, float, np.integer, np.floating)) for x in raw_res):
+                q_lower = question.lower() if question else ""
+                entity_tokens = (
+                    "khách", "khach", "ai", "hàng", "hang", "sản phẩm", "san pham",
+                    "món", "mon", "tên", "ten", "mặt hàng", "mat hang", "top", "liet ke", "liệt kê"
+                )
+                metric_explicit = any(
+                    k in q_lower
+                    for k in (
+                        "doanh thu là bao nhiêu", "dthu là bao nhiêu", "số tiền", "so tien",
+                        "mỗi tháng", "moi thang", "mỗi ngày", "moi ngay", "bao nhiêu tiền", "bn tiền"
+                    )
+                )
+                wants_entity = any(k in q_lower for k in entity_tokens) and not metric_explicit
+                if wants_entity and all(isinstance(x[0], str) for x in raw_res):
+                    raw_res = [x[0] for x in raw_res]
+                elif any(isinstance(x[1], (int, float, np.integer, np.floating)) for x in raw_res):
                     raw_res = [x[1] for x in raw_res]
             result.result = raw_res
             result.answer_type = exec_globals.get("answer_type", "abstain")

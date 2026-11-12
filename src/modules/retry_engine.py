@@ -195,6 +195,88 @@ class RetryEngine:
                         retries = attempt + 1
                         continue
 
+                # Semantic Validation for Percentage Proportion & Debt Collection
+                if attempt < self.max_retries and result.success and question:
+                    q_lower = question.lower()
+
+                    # 1. Degenerate Percent Check on category / group share
+                    is_proportion_q = any(
+                        k in q_lower
+                        for k in (
+                            "tỉ trọng", "ty trong", "chiếm bao nhiêu %", "chiem bnhiu %",
+                            "chiếm bn %", "chiem bao nhieu %", "tỉ lệ dthu", "tỷ lệ dthu", "phần của"
+                        )
+                    )
+                    if is_proportion_q and result.answer_type == "percent":
+                        try:
+                            val_pct = float(result.result)
+                            if val_pct in (100.0, 100, -100.0, -100, 0.0, 0):
+                                logger.info(
+                                    "Degenerate percent %s for proportion question. Triggering semantic retry (attempt %d).",
+                                    val_pct,
+                                    attempt + 1,
+                                )
+                                error_msg = (
+                                    f"SemanticWarning: Result produced {val_pct}% for a category proportion question. "
+                                    "Rulebook §1 requires that the denominator is the TOTAL revenue of ALL products/categories "
+                                    "in the specified period. Do NOT filter the denominator table by category!"
+                                )
+                                try:
+                                    current_prompt = self.prompt_builder.build_retry_prompt(
+                                        prompt,
+                                        result.code,
+                                        error_msg,
+                                        available_context=self._available_context(tables, error_msg),
+                                        token_counter=token_counter,
+                                        max_tokens=max_prompt_tokens,
+                                    )
+                                    best_result = result
+                                    retries = attempt + 1
+                                    continue
+                                except PromptTokenLimitError:
+                                    pass
+                        except (ValueError, TypeError):
+                            pass
+
+                    # 2. Implausible Debt Collection (Customer debt repayment vs total store receipts)
+                    is_debt_payment_q = any(
+                        k in q_lower
+                        for k in (
+                            "thu nợ", "khách trả nợ", "trả bớt nợ", "thu hồi nợ",
+                            "thu hoi cong no", "khach tra no", "thu hoi dc bn tien cong no"
+                        )
+                    )
+                    if is_debt_payment_q and result.answer_type == "number":
+                        try:
+                            val_num = float(result.result)
+                            if val_num > 50_000_000:
+                                logger.info(
+                                    "Implausible debt payment %s (>50M). Triggering semantic retry (attempt %d).",
+                                    val_num,
+                                    attempt + 1,
+                                )
+                                error_msg = (
+                                    f"Rulebook §4 Guidance: For customer debt repayment ('thu nợ', 'khách trả nợ', 'trả bớt nợ'), "
+                                    "only count payments made AFTER the order date (ngày thanh toán > ngày mua) for credit orders. "
+                                    "Do NOT sum total receipts/cash flow of the entire store!"
+                                )
+                                try:
+                                    current_prompt = self.prompt_builder.build_retry_prompt(
+                                        prompt,
+                                        result.code,
+                                        error_msg,
+                                        available_context=self._available_context(tables, error_msg),
+                                        token_counter=token_counter,
+                                        max_tokens=max_prompt_tokens,
+                                    )
+                                    best_result = result
+                                    retries = attempt + 1
+                                    continue
+                                except PromptTokenLimitError:
+                                    pass
+                        except (ValueError, TypeError):
+                            pass
+
                 # Success
                 return (result, attempt)
 

@@ -64,16 +64,21 @@ def format_number(value: Any) -> Optional[Union[int, float]]:
 
 
 def format_percent(value: Any) -> Optional[float]:
-    """Format a percentage answer. Rounded to 2 decimal places."""
+    """Format a percentage answer. Rounded to 2 decimal places using ROUND_HALF_UP."""
     if value is None:
         return None
     try:
         num = float(value)
         if math.isnan(num) or math.isinf(num):
             return None
-        return round(num, 2)
+        from decimal import Decimal, ROUND_HALF_UP
+        d = Decimal(str(num)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return float(d)
     except (ValueError, TypeError):
-        return None
+        try:
+            return round(float(value), 2)
+        except Exception:
+            return None
 
 
 def format_string(value: Any) -> Optional[str]:

@@ -787,44 +787,77 @@ def patch_code_and_tables_for_rulebook(
                         patched,
                     )
 
+    def _find_call_end(text: str, start_paren: int) -> int:
+        in_single = False
+        in_double = False
+        escape = False
+        depth = 0
+        for i in range(start_paren, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == "'" and not in_double:
+                in_single = not in_single
+            elif ch == '"' and not in_single:
+                in_double = not in_double
+            elif not in_single and not in_double:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+        return -1
+
     # Rulebook §3: Protect against inner join on conversion tables dropping products without large units
     for conv_token in ("quydoi", "quy_doi", "don_vi_sp", "donvisp", "danhmuc", "danh_muc"):
-        patched = re.sub(
-            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*how\s*=\s*['\"]inner['\"]",
-            r".merge(\1, how='left'",
-            patched,
-            flags=re.IGNORECASE,
-        )
-        patched = re.sub(
-            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*(?!how\s*=)",
-            r".merge(\1, how='left', ",
-            patched,
-            flags=re.IGNORECASE,
-        )
-        patched = re.sub(
-            rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*\)",
-            r".merge(\1, how='left')",
-            patched,
-            flags=re.IGNORECASE,
-        )
-        patched = re.sub(
-            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*how\s*=\s*['\"]inner['\"]",
-            r"pd.merge(\1, \2, how='left'",
-            patched,
-            flags=re.IGNORECASE,
-        )
-        patched = re.sub(
-            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*,\s*(?!how\s*=)",
-            r"pd.merge(\1, \2, how='left', ",
-            patched,
-            flags=re.IGNORECASE,
-        )
-        patched = re.sub(
-            rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)\s*\)",
-            r"pd.merge(\1, \2, how='left')",
-            patched,
-            flags=re.IGNORECASE,
-        )
+        for pattern_str, is_pd in (
+            (rf"\.merge\(\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)", False),
+            (rf"pd\.merge\(\s*([^,]+),\s*([A-Za-z0-9_]*{conv_token}[A-Za-z0-9_]*)", True),
+        ):
+            pos = 0
+            while True:
+                m = re.search(pattern_str, patched[pos:], re.IGNORECASE)
+                if not m:
+                    break
+                m_start = pos + m.start()
+                paren_start = patched.find("(", m_start)
+                paren_end = _find_call_end(patched, paren_start)
+                if paren_end == -1:
+                    break
+                call_args = patched[paren_start + 1 : paren_end]
+                if re.search(r"\bhow\s*=", call_args, re.IGNORECASE):
+                    new_call_args = re.sub(
+                        r"how\s*=\s*['\"]inner['\"]", "how='left'", call_args, flags=re.IGNORECASE
+                    )
+                    patched = patched[: paren_start + 1] + new_call_args + patched[paren_end :]
+                    pos = paren_start + 1 + len(new_call_args) + 1
+                else:
+                    if is_pd:
+                        left = m.group(1).strip()
+                        tbl = m.group(2).strip()
+                        tbl_pos = call_args.find(tbl) + len(tbl)
+                        rest_args = call_args[tbl_pos:].strip()
+                        if rest_args.startswith(","):
+                            rest_args = ", " + rest_args[1:].strip()
+                        elif rest_args:
+                            rest_args = ", " + rest_args
+                        new_call_args = f"{left}, {tbl}, how='left'{rest_args}"
+                    else:
+                        tbl = m.group(1).strip()
+                        tbl_pos = call_args.find(tbl) + len(tbl)
+                        rest_args = call_args[tbl_pos:].strip()
+                        if rest_args.startswith(","):
+                            rest_args = ", " + rest_args[1:].strip()
+                        elif rest_args:
+                            rest_args = ", " + rest_args
+                        new_call_args = f"{tbl}, how='left'{rest_args}"
+                    patched = patched[: paren_start + 1] + new_call_args + patched[paren_end :]
+                    pos = paren_start + 1 + len(new_call_args) + 1
 
     # Rulebook §3 lines 43-44: Non-converted items have ratio = 1 (fillna(1) on conversion ratios)
     ratio_cols = ("Tỉ lệ quy đổi", "Ti le quy doi", "Hệ số", "He so", "he_so", "ti_le", "ty_le", "ratio", "Tỉ lệ")
@@ -1081,12 +1114,30 @@ def format_accounting_context(
             "- Giá nhập bình quân một đơn vị (Rulebook §5 line 65): Phải tính bình quân gia quyền theo số lượng nhập của đơn vị đó: `(df['Số lượng'] * df['Đơn giá']).sum() / df['Số lượng'].sum()`. Chú ý: dùng cột 'Số lượng' (theo đơn vị được hỏi), KHÔNG chia cho 'Số lượng (ĐVT cơ bản)'. Làm tròn về đồng."
         )
 
+    # Rulebook §2 line 33 Work shift guidance
+    if any(k in qtext for k in ("ca sang", "ca chieu", "ca toi", "ca lam viec")):
+        notes.append(
+            "- Ca sáng, ca chiều (Rulebook §2 line 33): Theo giờ tạo đơn: ca sáng 06:00–13:59:59 (hour >= 6 và hour < 14), ca chiều 14:00–21:59:59 (hour >= 14 và hour < 22). So ca chiều với ca sáng: mốc so sánh (mẫu số) là ca sáng."
+        )
+
+    # Rulebook §2 line 32 Lunar Tet guidance
+    if any(k in qtext for k in ("tet", "dip tet", "ngay tet", "mua tet")):
+        notes.append(
+            "- Tết, dịp Tết (Rulebook §2 line 32): Tết năm Y tính từ ngày dương của 23 tháng Chạp (năm âm Y-1) đến hết ngày dương của mùng 10 tháng Giêng (năm âm Y). 'So với trước Tết' = cùng số ngày ngay trước 23 tháng Chạp."
+        )
+
+    # Rulebook §1 Percentage of category guidance
+    if any(k in qtext for k in ("ti trong", "ty trong", "chiem bao nhieu %", "chiem bnhiu %", "ti le dthu", "phan tram dthu")):
+        notes.append(
+            "- Tỉ trọng danh mục/nhóm hàng (Rulebook §1): Tỉ trọng % = (Doanh thu của nhóm / TỔNG doanh thu toàn bộ cửa hàng) * 100. Lưu ý: Mẫu số phải là tổng doanh thu của TẤT CẢ mặt hàng trong kỳ, tuyệt đối không lọc theo nhóm ở mẫu số!"
+        )
+
     # Rulebook §4 line 58 Debt added & Debt paid guidance
-    if any(k in qtext for k in ("no them", "ghi no them", "mua chiu them", "tra no", "tra bot no", "thu no", "thu hoi no", "thu hoi cong no", "tra duoc", "mua chiu")):
+    if any(k in qtext for k in ("no them", "ghi no them", "mua chiu them", "tra no", "tra bot no", "thu no", "thu hoi no", "thu hoi cong no", "tra duoc", "mua chiu", "khach tra no")):
         notes.append(
             "- Công nợ phát sinh và trả nợ trong kỳ (Rulebook §4 line 58):"
             "\n  + Nợ thêm trong kỳ: Là phần chưa thanh toán lúc mua của các đơn ghi nợ/mua chịu phát sinh trong kỳ: `(Tổng đơn - Tiền trả lúc mua)` (hoặc cột `Còn nợ` của đơn nợ lúc lập). Không tính đơn đã hủy/trả hàng."
-            "\n  + Trả nợ / Thu nợ trong kỳ: Là tổng số tiền thu/trả nợ phát sinh trong kỳ trên Sổ quỹ / Phiếu thu / Thanh toán (chỉ tính tiền thu nợ cho các đơn nợ, không tính tiền khách trả ngay lúc mua)."
+            "\n  + Trả nợ / Thu nợ trong kỳ: Chỉ tính các khoản trả SAU NGÀY MUA (ngày thanh toán > ngày mua hoặc sau thời điểm mua). Tuyệt đối không cộng toàn bộ cột 'Tiền' của bảng thanh toán nếu không lọc theo đơn ghi nợ!"
             "\n  + Nếu câu hỏi yêu cầu ghi 2 số theo thứ tự: trả về danh sách 2 số `[nợ_thêm, trả_được]`."
         )
 
